@@ -1,4 +1,4 @@
-package redactor
+package detectors
 
 import (
 	"math"

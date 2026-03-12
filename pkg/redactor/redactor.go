@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"regexp"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -14,6 +13,7 @@ import (
 
 	"github.com/pelletier/go-toml/v2"
 	"github.com/rs/zerolog"
+	"github.com/wangyihang/llm-prism/pkg/redactor/detectors"
 	"github.com/wangyihang/llm-prism/pkg/utils"
 	"github.com/wangyihang/llm-prism/pkg/utils/ctxkeys"
 )
@@ -32,7 +32,7 @@ type DetectionDetail struct {
 type Redactor struct {
 	config           *Config
 	logs             zerolog.Logger
-	detectors        []Detector
+	detectors        []detectors.Detector
 	stats            sync.Map // detector_type -> *int64
 	details          []DetectionDetail
 	mu               sync.Mutex
@@ -92,32 +92,31 @@ func New(configPath string, sysLog, detectionLog zerolog.Logger) (*Redactor, err
 	config.Rules = compatibleRules
 	gitleaksCount := len(config.Rules)
 
-	// Add DeepSeek specific rule as it is often missing from Gitleaks
-	deepseekRegex := regexp.MustCompile(`sk-[a-f0-9]{32}`)
-	config.Rules = append(config.Rules, Rule{
-		ID:          "deepseek-api-key",
-		Description: "DeepSeek API Key",
-		Regex:       deepseekRegex,
-		RawRegex:    deepseekRegex.String(),
-	})
-	customCount := len(config.Rules) - gitleaksCount
-
 	sysLog.Info().
 		Int("gitleaks", gitleaksCount).
-		Int("custom", customCount).
 		Int("total", len(config.Rules)).
 		Msg("redaction rules loaded")
 
-	detectors := []Detector{
-		NewRegexDetector(config.Rules),
+	var regexRules []detectors.RegexRule
+	for _, rule := range config.Rules {
+		regexRules = append(regexRules, detectors.RegexRule{
+			ID:          rule.ID,
+			Description: rule.Description,
+			Regex:       rule.Regex,
+		})
+	}
+
+	detectorsList := []detectors.Detector{
+		detectors.NewRegexDetector(regexRules),
+		detectors.NewDeepSeekDetector(),
 		// Default threshold 4.3 to skip hex-only strings (max entropy 4.0)
-		NewEntropyDetector(4.3, 32),
+		detectors.NewEntropyDetector(4.3, 32),
 	}
 
 	return &Redactor{
 		config:    &config,
 		logs:      detectionLog,
-		detectors: detectors,
+		detectors: detectorsList,
 	}, nil
 }
 

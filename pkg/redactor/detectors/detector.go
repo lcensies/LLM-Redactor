@@ -1,4 +1,4 @@
-package redactor
+package detectors
 
 type RedactionCallback func(match, ruleID, description string) string
 

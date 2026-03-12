@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/rs/zerolog"
+	"github.com/wangyihang/llm-prism/pkg/redactor/detectors"
 	"github.com/wangyihang/llm-prism/pkg/utils/ctxkeys"
 )
 
@@ -35,8 +36,8 @@ regex = "(?<=secret:)[a-z]+"
 		t.Fatalf("Failed to create redactor: %v", err)
 	}
 
-	if len(r.config.Rules) != 2 {
-		t.Errorf("Expected 2 rules (1 from config + 1 default DeepSeek), got %d", len(r.config.Rules))
+	if len(r.config.Rules) != 1 {
+		t.Errorf("Expected 1 rule from config, got %d", len(r.config.Rules))
 	}
 }
 
@@ -52,7 +53,7 @@ func TestRedactRequest(t *testing.T) {
 	if err := r.config.Rules[0].Compile(); err != nil {
 		t.Fatalf("Failed to compile rule: %v", err)
 	}
-	r.detectors = []Detector{NewRegexDetector(r.config.Rules)}
+	r.detectors = []detectors.Detector{detectors.NewRegexDetector([]detectors.RegexRule{{ID: r.config.Rules[0].ID, Description: r.config.Rules[0].Description, Regex: r.config.Rules[0].Regex}})}
 
 	reqBody := `{"messages": [{"role": "user", "content": "The key is SECRET_KEY_12345"}]}`
 	redacted, _ := r.RedactRequest(context.Background(), []byte(reqBody))
@@ -75,7 +76,7 @@ func TestDetectionLogging(t *testing.T) {
 	if err := r.config.Rules[0].Compile(); err != nil {
 		t.Fatalf("Failed to compile rule: %v", err)
 	}
-	r.detectors = []Detector{NewRegexDetector(r.config.Rules)}
+	r.detectors = []detectors.Detector{detectors.NewRegexDetector([]detectors.RegexRule{{ID: r.config.Rules[0].ID, Description: r.config.Rules[0].Description, Regex: r.config.Rules[0].Regex}})}
 
 	ctx := context.WithValue(context.Background(), ctxkeys.RequestID, "test-req-id")
 	r.RedactContent(ctx, "Text HIT_ME text")
@@ -96,7 +97,7 @@ func TestRedactValueRecursively(t *testing.T) {
 		logs: zerolog.Nop(),
 	}
 	_ = r.config.Rules[0].Compile()
-	r.detectors = []Detector{NewRegexDetector(r.config.Rules)}
+	r.detectors = []detectors.Detector{detectors.NewRegexDetector([]detectors.RegexRule{{ID: r.config.Rules[0].ID, Description: r.config.Rules[0].Description, Regex: r.config.Rules[0].Regex}})}
 
 	val := r.RedactValue(context.Background(), []interface{}{"A_MY_PASSWORD_B", map[string]interface{}{"key": "MY_PASSWORD"}})
 	valJSON, _ := json.Marshal(val)
@@ -111,8 +112,8 @@ func TestConfigLoadFallback(t *testing.T) {
 	_ = os.WriteFile(tmpFile, []byte(jsonConfig), 0644)
 	defer func() { _ = os.Remove(tmpFile) }()
 	r2, err := New(tmpFile, zerolog.Nop(), zerolog.Nop())
-	if err != nil || len(r2.config.Rules) != 2 {
-		t.Errorf("Failed to load JSON config (expected 1 config + 1 default): %v, got count %d", err, len(r2.config.Rules))
+	if err != nil || len(r2.config.Rules) != 1 {
+		t.Errorf("Failed to load JSON config (expected 1 config): %v, got count %d", err, len(r2.config.Rules))
 	}
 }
 

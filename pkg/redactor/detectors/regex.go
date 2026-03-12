@@ -1,10 +1,18 @@
-package redactor
+package detectors
 
-type RegexDetector struct {
-	rules []Rule
+import "regexp"
+
+type RegexRule struct {
+	ID          string
+	Description string
+	Regex       *regexp.Regexp
 }
 
-func NewRegexDetector(rules []Rule) *RegexDetector {
+type RegexDetector struct {
+	rules []RegexRule
+}
+
+func NewRegexDetector(rules []RegexRule) *RegexDetector {
 	return &RegexDetector{rules: rules}
 }
 
