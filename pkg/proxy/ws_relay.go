@@ -93,45 +93,21 @@ func (r *WebSocketRelay) handle(w http.ResponseWriter, req *http.Request) {
 	}()
 
 	subprotocols := parseWebSocketSubprotocols(req.Header)
-	clientWS, err := websocket.Accept(w, req, &websocket.AcceptOptions{
-		InsecureSkipVerify: true,
-		Subprotocols:       subprotocols,
-	})
+	clientWS, err := r.acceptClientWebSocket(w, req, requestID, subprotocols)
 	if err != nil {
-		r.sysLog.Error().Err(err).Str("id", requestID).Msg("internal relay failed to accept websocket")
 		return
 	}
-	defer func() {
-		_ = clientWS.Close(websocket.StatusInternalError, "relay error")
-	}()
+	defer closeWebSocketSilently(clientWS, websocket.StatusInternalError, "relay error")
 
-	dialHeaders := filterWebSocketDialHeaders(req.Header)
-	dialOptions := &websocket.DialOptions{
-		HTTPHeader:   dialHeaders,
-		Subprotocols: subprotocols,
-		HTTPClient: &http.Client{
-			Transport: &http.Transport{
-				TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
-			},
-		},
-	}
-
-	backendWS, _, err := websocket.Dial(sessionCtx, wsTarget.String(), dialOptions)
+	backendWS, err := r.dialBackendWebSocket(sessionCtx, wsTarget, requestID, subprotocols, req.Header)
 	if err != nil {
-		r.sysLog.Error().Err(err).Str("id", requestID).Str("url", wsTarget.String()).Msg("internal relay failed to dial backend websocket")
 		return
 	}
-	defer func() {
-		_ = backendWS.Close(websocket.StatusInternalError, "relay error")
-	}()
+	defer closeWebSocketSilently(backendWS, websocket.StatusInternalError, "relay error")
 
 	r.sysLog.Info().Str("id", requestID).Str("target", wsTarget.String()).Msg("internal websocket relay established")
 
-	baseCtx := sessionCtx
-	baseCtx = context.WithValue(baseCtx, ctxkeys.RequestID, requestID)
-	baseCtx = context.WithValue(baseCtx, ctxkeys.Host, targetURL.Host)
-	baseCtx = context.WithValue(baseCtx, ctxkeys.Path, targetURL.Path)
-	baseCtx = context.WithValue(baseCtx, ctxkeys.Method, "WEBSOCKET")
+	baseCtx := buildRelayContext(sessionCtx, requestID, targetURL)
 
 	errChan := make(chan error, 2)
 	go pipeWebSocket(baseCtx, r.rdr, clientWS, backendWS, "client->server", errChan)
@@ -143,6 +119,57 @@ func (r *WebSocketRelay) handle(w http.ResponseWriter, req *http.Request) {
 	} else {
 		r.sysLog.Info().Str("id", requestID).Msg("internal relay websocket closed normally")
 	}
+}
+
+func (r *WebSocketRelay) acceptClientWebSocket(w http.ResponseWriter, req *http.Request, requestID string, subprotocols []string) (*websocket.Conn, error) {
+	clientWS, err := websocket.Accept(w, req, &websocket.AcceptOptions{
+		InsecureSkipVerify: true,
+		Subprotocols:       subprotocols,
+	})
+	if err != nil {
+		r.sysLog.Error().Err(err).Str("id", requestID).Msg("internal relay failed to accept websocket")
+		return nil, err
+	}
+	return clientWS, nil
+}
+
+func (r *WebSocketRelay) dialBackendWebSocket(ctx context.Context, wsTarget *url.URL, requestID string, subprotocols []string, header http.Header) (*websocket.Conn, error) {
+	dialHeaders := filterWebSocketDialHeaders(header)
+	dialOptions := &websocket.DialOptions{
+		HTTPHeader:   dialHeaders,
+		Subprotocols: subprotocols,
+		HTTPClient: &http.Client{
+			Transport: &http.Transport{
+				TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+			},
+		},
+	}
+
+	backendWS, _, err := websocket.Dial(ctx, wsTarget.String(), dialOptions)
+	if err != nil {
+		r.sysLog.Error().Err(err).Str("id", requestID).Str("url", wsTarget.String()).Msg("internal relay failed to dial backend websocket")
+		return nil, err
+	}
+	return backendWS, nil
+}
+
+func buildRelayContext(sessionCtx context.Context, requestID string, targetURL *url.URL) context.Context {
+	baseCtx := sessionCtx
+	if baseCtx == nil {
+		baseCtx = context.Background()
+	}
+	baseCtx = context.WithValue(baseCtx, ctxkeys.RequestID, requestID)
+	baseCtx = context.WithValue(baseCtx, ctxkeys.Host, targetURL.Host)
+	baseCtx = context.WithValue(baseCtx, ctxkeys.Path, targetURL.Path)
+	baseCtx = context.WithValue(baseCtx, ctxkeys.Method, "WEBSOCKET")
+	return baseCtx
+}
+
+func closeWebSocketSilently(conn *websocket.Conn, status websocket.StatusCode, reason string) {
+	if conn == nil {
+		return
+	}
+	_ = conn.Close(status, reason)
 }
 
 func parseRelayTarget(req *http.Request) (*url.URL, *url.URL, error) {
@@ -175,10 +202,32 @@ type errBadRelayTarget string
 func (e errBadRelayTarget) Error() string { return string(e) }
 
 func isWebSocketUpgrade(req *http.Request) bool {
-	return strings.EqualFold(req.Header.Get("Upgrade"), "websocket")
+	if !strings.EqualFold(req.Header.Get("Upgrade"), "websocket") {
+		return false
+	}
+	// Some clients omit Connection, but if it's present it must include "upgrade".
+	conn := req.Header.Get("Connection")
+	if conn == "" {
+		return true
+	}
+	return headerHasToken(conn, "upgrade")
 }
 
-func pipeWebSocket(ctx context.Context, rdr ContentRedactor, src, dst *websocket.Conn, direction string, errChan chan error) {
+func headerHasToken(value, token string) bool {
+	for _, part := range strings.Split(value, ",") {
+		if strings.EqualFold(strings.TrimSpace(part), token) {
+			return true
+		}
+	}
+	return false
+}
+
+type webSocketConn interface {
+	Read(ctx context.Context) (websocket.MessageType, []byte, error)
+	Write(ctx context.Context, typ websocket.MessageType, data []byte) error
+}
+
+func pipeWebSocket(ctx context.Context, rdr ContentRedactor, src, dst webSocketConn, direction string, errChan chan error) {
 	for {
 		typ, data, err := src.Read(ctx)
 		if err != nil {
@@ -186,13 +235,7 @@ func pipeWebSocket(ctx context.Context, rdr ContentRedactor, src, dst *websocket
 			return
 		}
 
-		if rdr != nil {
-			redactCtx := context.WithValue(ctx, ctxkeys.Source, direction)
-			redacted, changed, err := rdr.RedactWebSocket(redactCtx, typ, data)
-			if err == nil && changed {
-				data = redacted
-			}
-		}
+		data = redactWebSocketPayload(ctx, rdr, direction, typ, data)
 
 		err = dst.Write(ctx, typ, data)
 		if err != nil {
@@ -200,6 +243,18 @@ func pipeWebSocket(ctx context.Context, rdr ContentRedactor, src, dst *websocket
 			return
 		}
 	}
+}
+
+func redactWebSocketPayload(ctx context.Context, rdr ContentRedactor, direction string, typ websocket.MessageType, data []byte) []byte {
+	if rdr == nil {
+		return data
+	}
+	redactCtx := context.WithValue(ctx, ctxkeys.Source, direction)
+	redacted, changed, err := rdr.RedactWebSocket(redactCtx, typ, data)
+	if err == nil && changed {
+		return redacted
+	}
+	return data
 }
 
 func parseWebSocketSubprotocols(header http.Header) []string {
