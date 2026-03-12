@@ -2,84 +2,29 @@
 
 A local transparent proxy to redact secrets (API keys, PII) before they leave your machine.
 
----
-
 | Feature | Direct Connection | With llm-prism |
 | :--- | :--- | :--- |
-| **Data Privacy** | Secrets sent to Cloud | **Redacted locally** |
-| **Provider Sees** | `key: "sk-0a6916c7e8693709f204d8ad8d027634"` | `key: "[REDACTED]"` |
-| **Streaming** | Standard | **Real-time filtering** |
+| Data Privacy | Secrets sent to Cloud | Redacted locally |
+| Provider Sees | `key: "sk-0a6916c7e8693709f204d8ad8d027634"` | `key: "[REDACTED]"` |
+| Streaming | Standard | Real-time filtering |
 
----
+## Core Features
+
+- Automatic Redaction: Detects 100+ secret types using Gitleaks-compatible rules.
+- Zero-Latency Streaming: Intercepts and filters SSE streams in real-time.
+- Deep JSON Scanning: Recursively traverses nested structures (e.g., Anthropic content blocks).
+- Local Audit: Records detected leaks to `llm-prism-detections.jsonl`.
 
 ## Quick Start
 
-### 1. Install
+### Install
+
 ```bash
 go install github.com/wangyihang/llm-prism@latest
 ```
 
-### 2. Setup Rules
-Update your local redirection rules from the official Gitleaks repository:
-```bash
-llm-prism sync
-```
+### Run
 
-### 3. Run
-The easiest way is to use `exec`, which automatically starts the proxy and injects environment variables (like `ANTHROPIC_BASE_URL`) into your command:
 ```bash
-export LLM_PRISM_API_KEY=sk-your-real-key
 llm-prism exec -- claude
 ```
-
-Alternatively, run the proxy manually:
-```bash
-llm-prism run
-```
-
----
-
-## Integration
-
-If you use `llm-prism exec`, the following variables are injected automatically:
-- `ANTHROPIC_BASE_URL` (Claude)
-- `GOOGLE_GEMINI_BASE_URL` (Gemini)
-- `GEMINI_API_BASE_URL` (Gemini)
-- `GEMINI_BASE_URL` (Gemini)
-- `OPENAI_BASE_URL` (OpenAI/Codex)
-- `OPENAI_API_BASE` (OpenAI/Codex)
-- `CODEX_API_BASE` (Codex)
-- `DEEPSEEK_BASE_URL` (DeepSeek)
-
-To manually connect your tool, point the base URL to `http://localhost:4000`:
-
-### Support Multiple Providers
-`llm-prism` supports different providers with their specific authentication headers:
-- `deepseek` (Default): OpenAI-compatible (`Authorization: Bearer`)
-- `kimi`: OpenAI-compatible (`Authorization: Bearer`)
-- `claude`: Anthropic-compatible (`X-API-Key`, `Anthropic-Version`)
-- `gemini`: Google-compatible (`x-goog-api-key`)
-- `openai`: OpenAI-compatible (`Authorization: Bearer`)
-
-### Claude Code
-```bash
-export ANTHROPIC_BASE_URL=http://localhost:4000
-claude
-```
-
-### Cursor / Aider / OpenAI SDK
-Set the API base URL in your configuration to `http://localhost:4000`.
-
----
-
-## Core Features
-
-- **Automatic Redaction**: Detects 100+ secret types using Gitleaks-compatible rules.
-- **Zero-Latency Streaming**: Intercepts and filters SSE streams in real-time.
-- **Deep JSON Scanning**: Recursively traverses nested structures (e.g., Anthropic content blocks).
-- **Local Audit**: Records detected leaks to `llm-prism-detections.jsonl`.
-
----
-
-## License
-MIT
