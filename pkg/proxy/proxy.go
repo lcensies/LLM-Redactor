@@ -8,7 +8,6 @@ import (
 	"net/http"
 	"net/http/httputil"
 	"net/url"
-	"strings"
 
 	"github.com/wangyihang/llm-prism/pkg/config"
 	"github.com/wangyihang/llm-prism/pkg/llms/providers"
@@ -64,57 +63,6 @@ func Setup(cli *config.CLI, rdr *redactor.Redactor, logs *logging.Loggers) (*htt
 	}
 
 	rp.ModifyResponse = func(res *http.Response) error {
-		if rdr != nil && res.StatusCode == http.StatusOK && strings.Contains(res.Header.Get("Content-Type"), "text/event-stream") {
-			logs.System.Debug().Msg("intercepting SSE stream for redaction")
-			requestID := GetRequestID(res.Request.Context())
-			sr := redactor.NewStreamRedactor(rdr, 100, map[string]string{
-				"request_id": requestID,
-				"source":     "response_stream",
-				"path":       res.Request.URL.Path,
-			})
-
-			reader, writer := io.Pipe()
-			oldBody := res.Body
-
-			go func() {
-				defer func() { _ = oldBody.Close() }()
-				defer func() { _ = writer.Close() }()
-
-				buf := make([]byte, 4096)
-				var lineBuffer []byte
-				for {
-					n, err := oldBody.Read(buf)
-					if n > 0 {
-						lineBuffer = append(lineBuffer, buf[:n]...)
-						for {
-							idx := bytes.IndexByte(lineBuffer, '\n')
-							if idx == -1 {
-								break
-							}
-							line := lineBuffer[:idx+1]
-							if _, err := writer.Write(sr.RedactSSELine(line)); err != nil {
-								return
-							}
-							lineBuffer = lineBuffer[idx+1:]
-						}
-					}
-					if err != nil {
-						if len(lineBuffer) > 0 {
-							if _, err := writer.Write(sr.RedactSSELine(lineBuffer)); err != nil {
-								return
-							}
-						}
-						if final := sr.Flush(); len(final) > 0 {
-							if _, err := writer.Write(final); err != nil {
-								return
-							}
-						}
-						break
-					}
-				}
-			}()
-			res.Body = reader
-		}
 		return nil
 	}
 

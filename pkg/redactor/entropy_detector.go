@@ -3,6 +3,7 @@ package redactor
 import (
 	"math"
 	"regexp"
+	"strings"
 )
 
 type EntropyDetector struct {
@@ -15,13 +16,14 @@ func NewEntropyDetector(threshold float64, minLen int) *EntropyDetector {
 	return &EntropyDetector{
 		threshold: threshold,
 		minLen:    minLen,
-		// Token pattern: letters, numbers, and common key symbols (excluding =)
-		regex: regexp.MustCompile(`[a-zA-Z0-9\-_+/]{16,}`),
+		// Token pattern: letters, numbers, and common key symbols (excluding = and /)
+		regex: regexp.MustCompile(`[a-zA-Z0-9\-_+]{16,}`),
 	}
 }
 
 var (
 	envVarRegex = regexp.MustCompile(`^[A-Z_][A-Z0-9_]*$`)
+	urlPartRegex = regexp.MustCompile(`^.*(\.com|\.org|\.net|\.gov|\.edu|\.io|json-schema|githubusercontent).*$`)
 )
 
 func (d *EntropyDetector) Type() string {
@@ -35,6 +37,15 @@ func (d *EntropyDetector) Redact(content string, callback RedactionCallback) str
 		}
 		// Skip all-uppercase with underscores (likely env vars)
 		if envVarRegex.MatchString(match) {
+			return match
+		}
+		// Skip strings with multiple underscores (likely function/tool names like Agent_execute_shell)
+		if strings.Count(match, "_") >= 2 {
+			return match
+		}
+		// Skip strings that look like part of a common URL or domain
+		lowerMatch := strings.ToLower(match)
+		if urlPartRegex.MatchString(lowerMatch) {
 			return match
 		}
 		if ShannonEntropy(match) > d.threshold {

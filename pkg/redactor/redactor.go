@@ -17,7 +17,7 @@ import (
 )
 
 const (
-	RedactedPlaceholder = "[REDACTED_SECRET]"
+	RedactedPlaceholder = "REDACTED_SECRET"
 	DefaultRulesURL     = "https://raw.githubusercontent.com/gitleaks/gitleaks/master/config/gitleaks.toml"
 )
 
@@ -118,8 +118,8 @@ func New(configPath string, logs zerolog.Logger) (*Redactor, error) {
 
 	detectors := []Detector{
 		NewRegexDetector(config.Rules),
-		// Default threshold 3.5 for hex-like keys, 24 min length to avoid common variable names
-		NewEntropyDetector(3.5, 24),
+		// Default threshold 3.5 for hex-like keys, 32 min length (hex part 32 + prefix)
+		NewEntropyDetector(3.5, 32),
 	}
 
 	return &Redactor{

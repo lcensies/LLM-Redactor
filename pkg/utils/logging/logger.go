@@ -45,6 +45,7 @@ func New(appLogFile, trafficLogFile, detectionLogFile string) *Loggers {
 	}
 
 	sysLog := zerolog.New(appWriter).
+		Level(zerolog.InfoLevel).
 		With().
 		Timestamp().
 		Logger()
