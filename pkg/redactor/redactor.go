@@ -9,6 +9,7 @@ import (
 
 	"github.com/pelletier/go-toml/v2"
 	"github.com/rs/zerolog"
+	"github.com/wangyihang/llm-prism/pkg/utils"
 )
 
 const RedactedPlaceholder = "[REDACTED_SECRET]"
@@ -19,6 +20,7 @@ type Redactor struct {
 }
 
 func New(configPath string, logs zerolog.Logger) (*Redactor, error) {
+	configPath = utils.ExpandTilde(configPath)
 	data, err := os.ReadFile(configPath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read config: %w", err)

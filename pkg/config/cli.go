@@ -3,7 +3,7 @@ package config
 type CLI struct {
 	LogFile          string `help:"Log file" env:"LLM_PRISM_LOG_FILE" default:"llm-prism.jsonl"`
 	DetectionLogFile string `help:"Detection log file" env:"LLM_PRISM_DETECTION_LOG_FILE" default:"llm-prism-detections.jsonl"`
-	RedactorRules    string `help:"Redactor rules file (TOML or JSON)" env:"LLM_PRISM_REDACTOR_RULES" default:"redactor_rules.toml"`
+	RedactorRules    string `help:"Redactor rules file (TOML or JSON)" env:"LLM_PRISM_REDACTOR_RULES" default:"~/.gitleaks.toml"`
 
 	Run struct {
 		ApiURL   string `help:"API URL" env:"LLM_PRISM_API_URL" default:"https://api.deepseek.com/anthropic"`
