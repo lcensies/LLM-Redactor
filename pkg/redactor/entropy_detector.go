@@ -22,8 +22,10 @@ func NewEntropyDetector(threshold float64, minLen int) *EntropyDetector {
 }
 
 var (
-	envVarRegex = regexp.MustCompile(`^[A-Z_][A-Z0-9_]*$`)
+	envVarRegex  = regexp.MustCompile(`^[A-Z_][A-Z0-9_]*$`)
 	urlPartRegex = regexp.MustCompile(`^.*(\.com|\.org|\.net|\.gov|\.edu|\.io|json-schema|githubusercontent).*$`)
+	uuidRegex    = regexp.MustCompile(`(?i)^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
+	hexOnlyRegex = regexp.MustCompile(`(?i)^[0-9a-f]+$`)
 )
 
 func (d *EntropyDetector) Type() string {
@@ -35,12 +37,20 @@ func (d *EntropyDetector) Redact(content string, callback RedactionCallback) str
 		if len(match) < d.minLen {
 			return match
 		}
-		// Skip all-uppercase with underscores (likely env vars)
-		if envVarRegex.MatchString(match) {
+		// Skip UUIDs
+		if uuidRegex.MatchString(match) {
 			return match
 		}
-		// Skip strings with multiple underscores (likely function/tool names like Agent_execute_shell)
+		// Skip strings with multiple underscores (likely function/tool names)
 		if strings.Count(match, "_") >= 2 {
+			return match
+		}
+		// Skip pure hex strings (likely hashes or IDs, not keys which usually use Base64)
+		if hexOnlyRegex.MatchString(match) {
+			return match
+		}
+		// Skip all-uppercase with underscores (likely env vars)
+		if envVarRegex.MatchString(match) {
 			return match
 		}
 		// Skip strings that look like part of a common URL or domain

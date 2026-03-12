@@ -4,7 +4,10 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
 	"os"
+	"regexp"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -12,8 +15,6 @@ import (
 	"github.com/pelletier/go-toml/v2"
 	"github.com/rs/zerolog"
 	"github.com/wangyihang/llm-prism/pkg/utils"
-	"io"
-	"net/http"
 )
 
 const (
@@ -116,10 +117,19 @@ func New(configPath string, logs zerolog.Logger) (*Redactor, error) {
 	}
 	config.Rules = compatibleRules
 
+	// Add DeepSeek specific rule as it is often missing from Gitleaks
+	deepseekRegex := regexp.MustCompile(`sk-[a-f0-9]{32}`)
+	config.Rules = append(config.Rules, Rule{
+		ID:          "deepseek-api-key",
+		Description: "DeepSeek API Key",
+		Regex:       deepseekRegex,
+		RawRegex:    deepseekRegex.String(),
+	})
+
 	detectors := []Detector{
 		NewRegexDetector(config.Rules),
-		// Default threshold 3.5 for hex-like keys, 32 min length (hex part 32 + prefix)
-		NewEntropyDetector(3.5, 32),
+		// Default threshold 4.3 to skip hex-only strings (max entropy 4.0)
+		NewEntropyDetector(4.3, 32),
 	}
 
 	return &Redactor{

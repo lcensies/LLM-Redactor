@@ -33,8 +33,8 @@ regex = "(?<=secret:)[a-z]+"
 		t.Fatalf("Failed to create redactor: %v", err)
 	}
 
-	if len(r.config.Rules) != 1 {
-		t.Errorf("Expected 1 compatible rule, got %d", len(r.config.Rules))
+	if len(r.config.Rules) != 2 {
+		t.Errorf("Expected 2 rules (1 from config + 1 default DeepSeek), got %d", len(r.config.Rules))
 	}
 }
 
@@ -179,8 +179,8 @@ func TestStreamRedactorEdgeCases(t *testing.T) {
 	_ = os.WriteFile(tmpFile, []byte(jsonConfig), 0644)
 	defer func() { _ = os.Remove(tmpFile) }()
 	r2, err := New(tmpFile, zerolog.Nop())
-	if err != nil || len(r2.config.Rules) != 1 {
-		t.Errorf("Failed to load JSON config: %v", err)
+	if err != nil || len(r2.config.Rules) != 2 {
+		t.Errorf("Failed to load JSON config (expected 1 config + 1 default): %v, got count %d", err, len(r2.config.Rules))
 	}
 }
 
