@@ -27,19 +27,14 @@ go install github.com/wangyihang/llm-redactor@latest
 ### Run
 
 ```bash
+# Prepend `llm-redactor exec --` to your existing command (e.g., `claude`, `gemini`, `codex`).
 llm-redactor exec -- claude
+llm-redactor exec -- gemini
+llm-redactor exec -- codex
 ```
 
-## Example: Preventing Credential Leaks
+### Exit
 
-**Scenario:** You have a `DEEPSEEK_API_KEY` stored in your environment and accidentally ask Claude to *"Summarize my .env file"*.
-
-**Without `llm-redactor`:** Your sensitive API keys are sent directly to the LLM provider.
-
-![Insecure Request](./figures/01.png)
-
-**With `llm-redactor` active:** The proxy intercepts the request and redacts secrets locally before they ever leave your machine.
+When you exit the ai coding agent, llm-redactor will output a brief summary of the detected leaks shows in the following figure, a secret key is detected and redacted for two times, all logs are stored in `llm-redactor-detections.jsonl`.
 
 ![Protected Request](./figures/02.png)
-
-All detections are logged locally to `llm-redactor-detections.jsonl` for easy auditing.
