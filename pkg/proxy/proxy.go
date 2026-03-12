@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"io"
 	"net/http"
@@ -14,6 +15,21 @@ import (
 	"github.com/wangyihang/llm-prism/pkg/redactor"
 	"github.com/wangyihang/llm-prism/pkg/utils/logging"
 )
+
+type contextKey string
+
+const requestIDKey contextKey = "requestID"
+
+func WithRequestID(ctx context.Context, id string) context.Context {
+	return context.WithValue(ctx, requestIDKey, id)
+}
+
+func GetRequestID(ctx context.Context) string {
+	if id, ok := ctx.Value(requestIDKey).(string); ok {
+		return id
+	}
+	return ""
+}
 
 func Setup(cli *config.CLI, rdr *redactor.Redactor, logs *logging.Loggers) (*httputil.ReverseProxy, error) {
 	u, err := url.Parse(cli.Run.ApiURL)
@@ -28,12 +44,14 @@ func Setup(cli *config.CLI, rdr *redactor.Redactor, logs *logging.Loggers) (*htt
 	rp.Director = func(r *http.Request) {
 		d(r)
 		p.Director(r)
+		requestID := GetRequestID(r.Context())
 		if rdr != nil && r.Method == http.MethodPost {
 			body, _ := io.ReadAll(r.Body)
 			redacted, err := rdr.RedactRequest(body, map[string]string{
-				"source": "request",
-				"path":   r.URL.Path,
-				"method": r.Method,
+				"request_id": requestID,
+				"source":     "request",
+				"path":       r.URL.Path,
+				"method":     r.Method,
 			})
 			if err == nil {
 				r.Body = io.NopCloser(bytes.NewReader(redacted))
@@ -48,9 +66,11 @@ func Setup(cli *config.CLI, rdr *redactor.Redactor, logs *logging.Loggers) (*htt
 	rp.ModifyResponse = func(res *http.Response) error {
 		if rdr != nil && res.StatusCode == http.StatusOK && strings.Contains(res.Header.Get("Content-Type"), "text/event-stream") {
 			logs.System.Debug().Msg("intercepting SSE stream for redaction")
+			requestID := GetRequestID(res.Request.Context())
 			sr := redactor.NewStreamRedactor(rdr, 100, map[string]string{
-				"source": "response_stream",
-				"path":   res.Request.URL.Path,
+				"request_id": requestID,
+				"source":     "response_stream",
+				"path":       res.Request.URL.Path,
 			})
 
 			reader, writer := io.Pipe()

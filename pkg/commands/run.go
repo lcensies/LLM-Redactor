@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/rs/zerolog"
 	"github.com/wangyihang/llm-prism/pkg/config"
 	"github.com/wangyihang/llm-prism/pkg/proxy"
@@ -30,19 +31,24 @@ func Run(cli *config.CLI, logs *logging.Loggers) {
 
 	err = http.ListenAndServe(addr, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		t := time.Now()
+		requestID := uuid.New().String()
 		rb := new(bytes.Buffer)
 		r.Body = io.NopCloser(io.TeeReader(r.Body, rb))
 		sw := &proxy.Spy{ResponseWriter: w, Buf: new(bytes.Buffer), Code: http.StatusOK}
 
+		// Inject request ID into context for downstream components
+		r = r.WithContext(proxy.WithRequestID(r.Context(), requestID))
+
 		rp.ServeHTTP(sw, r)
 
-		reqEvt := zerolog.Dict().Str("method", r.Method).Str("path", r.URL.Path)
+		reqEvt := zerolog.Dict().Str("id", requestID).Str("method", r.Method).Str("path", r.URL.Path)
 		proxy.EnrichLogEvent(reqEvt, rb.Bytes(), r.Header, logs.System)
 
 		resEvt := zerolog.Dict().Int("status", sw.Code)
 		proxy.EnrichLogEvent(resEvt, sw.Buf.Bytes(), sw.Header(), logs.System)
 
 		logs.Data.Info().
+			Str("id", requestID).
 			Dur("duration", time.Since(t)).
 			Dict("http", zerolog.Dict().Dict("request", reqEvt).Dict("response", resEvt)).
 			Msg("")
