@@ -95,6 +95,7 @@ func TestFilterWebSocketDialHeaders(t *testing.T) {
 	header.Set("Sec-WebSocket-Version", "13")
 	header.Set("Sec-WebSocket-Protocol", "proto")
 	header.Set(wsRelayTargetHeader, "http://target")
+	header.Set(wsRelayTokenHeader, "token")
 	header.Set("Authorization", "Bearer abc")
 	header.Set("User-Agent", "ua")
 
@@ -104,6 +105,9 @@ func TestFilterWebSocketDialHeaders(t *testing.T) {
 	}
 	if filtered.Get("Upgrade") != "" || filtered.Get("Connection") != "" || filtered.Get("Sec-WebSocket-Key") != "" {
 		t.Fatal("expected websocket handshake headers to be stripped")
+	}
+	if filtered.Get(wsRelayTokenHeader) != "" {
+		t.Fatal("expected relay token header to be stripped")
 	}
 }
 
@@ -130,7 +134,7 @@ func TestRewriteRequest(t *testing.T) {
 	req.Header.Set("Upgrade", "websocket")
 	req.Header.Set("Connection", "Upgrade")
 
-	relay := &WebSocketRelay{addr: "127.0.0.1:1234", sysLog: zerolog.Nop()}
+	relay := &WebSocketRelay{addr: "127.0.0.1:1234", sysLog: zerolog.Nop(), relayToken: "token-1"}
 	if !relay.RewriteRequest(req, "req-1") {
 		t.Fatal("expected rewrite to succeed")
 	}
@@ -140,6 +144,9 @@ func TestRewriteRequest(t *testing.T) {
 	if req.Header.Get(wsRelayTargetHeader) != "http://example.com/ws" {
 		t.Fatalf("unexpected relay header: %s", req.Header.Get(wsRelayTargetHeader))
 	}
+	if req.Header.Get(wsRelayTokenHeader) != "token-1" {
+		t.Fatalf("unexpected relay token header: %s", req.Header.Get(wsRelayTokenHeader))
+	}
 }
 
 func TestHeaderHasToken(t *testing.T) {
@@ -148,6 +155,18 @@ func TestHeaderHasToken(t *testing.T) {
 	}
 	if headerHasToken("keep-alive", "upgrade") {
 		t.Fatal("expected token miss")
+	}
+}
+
+func TestValidateRelayToken(t *testing.T) {
+	req, _ := http.NewRequest(http.MethodGet, "http://example.com/ws", nil)
+	relay := &WebSocketRelay{relayToken: "token-1"}
+	if relay.validateRelayToken(req) {
+		t.Fatal("expected token check to fail without header")
+	}
+	req.Header.Set(wsRelayTokenHeader, "token-1")
+	if !relay.validateRelayToken(req) {
+		t.Fatal("expected token check to succeed")
 	}
 }
 

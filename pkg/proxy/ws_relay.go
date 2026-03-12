@@ -16,14 +16,18 @@ import (
 	"github.com/wangyihang/llm-prism/pkg/utils/ctxkeys"
 )
 
-const wsRelayTargetHeader = "X-LLM-Prism-WS-Target"
+const (
+	wsRelayTargetHeader = "X-LLM-Prism-WS-Target"
+	wsRelayTokenHeader  = "X-LLM-Prism-WS-Token"
+)
 
 type WebSocketRelay struct {
-	addr     string
-	rdr      ContentRedactor
-	sysLog   zerolog.Logger
-	server   *http.Server
-	sessions sync.Map
+	addr       string
+	rdr        ContentRedactor
+	sysLog     zerolog.Logger
+	server     *http.Server
+	sessions   sync.Map
+	relayToken string
 }
 
 func NewWebSocketRelay(rdr ContentRedactor, sysLog zerolog.Logger) (*WebSocketRelay, error) {
@@ -33,9 +37,10 @@ func NewWebSocketRelay(rdr ContentRedactor, sysLog zerolog.Logger) (*WebSocketRe
 	}
 
 	relay := &WebSocketRelay{
-		addr:   ln.Addr().String(),
-		rdr:    rdr,
-		sysLog: sysLog,
+		addr:       ln.Addr().String(),
+		rdr:        rdr,
+		sysLog:     sysLog,
+		relayToken: uuid.NewString(),
 	}
 
 	mux := http.NewServeMux()
@@ -58,6 +63,7 @@ func (r *WebSocketRelay) RewriteRequest(req *http.Request, requestID string) boo
 	}
 
 	req.Header.Set(wsRelayTargetHeader, req.URL.String())
+	req.Header.Set(wsRelayTokenHeader, r.relayToken)
 	req.URL.Scheme = "http"
 	req.URL.Host = r.addr
 	r.sysLog.Info().Str("id", requestID).Str("host", req.Host).Str("path", req.URL.Path).Str("relay", r.addr).Msg("routing websocket to internal relay")
@@ -78,6 +84,11 @@ func (r *WebSocketRelay) Close(ctx context.Context) error {
 }
 
 func (r *WebSocketRelay) handle(w http.ResponseWriter, req *http.Request) {
+	if !r.validateRelayToken(req) {
+		http.Error(w, "forbidden", http.StatusForbidden)
+		return
+	}
+
 	requestID := uuid.New().String()
 	targetURL, wsTarget, err := parseRelayTarget(req)
 	if err != nil {
@@ -280,7 +291,7 @@ func filterWebSocketDialHeaders(header http.Header) http.Header {
 		if kLower == "upgrade" || kLower == "connection" || kLower == "proxy-connection" ||
 			kLower == "sec-websocket-key" || kLower == "sec-websocket-version" ||
 			kLower == "sec-websocket-extensions" || kLower == "sec-websocket-protocol" ||
-			kLower == strings.ToLower(wsRelayTargetHeader) {
+			kLower == strings.ToLower(wsRelayTargetHeader) || kLower == strings.ToLower(wsRelayTokenHeader) {
 			continue
 		}
 		for _, v := range vv {
@@ -288,4 +299,11 @@ func filterWebSocketDialHeaders(header http.Header) http.Header {
 		}
 	}
 	return res
+}
+
+func (r *WebSocketRelay) validateRelayToken(req *http.Request) bool {
+	if r == nil {
+		return false
+	}
+	return req.Header.Get(wsRelayTokenHeader) == r.relayToken
 }
