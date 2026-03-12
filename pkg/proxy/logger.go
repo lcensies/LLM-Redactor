@@ -26,7 +26,7 @@ func EnrichLogEvent(e *zerolog.Event, b []byte, h http.Header, sysLog zerolog.Lo
 	arr := zerolog.Arr()
 	for k, vv := range h {
 		for _, v := range vv {
-			arr.Dict(zerolog.Dict().Str("name", k).Str("value", v))
+			arr.Dict(zerolog.Dict().Str("name", k).Str("value", redactHeaderValue(k, v)))
 		}
 	}
 	e.Array("headers", arr)
@@ -35,5 +35,34 @@ func EnrichLogEvent(e *zerolog.Event, b []byte, h http.Header, sysLog zerolog.Lo
 		e.RawJSON("body", b)
 	} else {
 		e.Str("body", string(b))
+	}
+}
+
+const redactedHeaderValue = "[REDACTED]"
+
+func redactHeaderValue(name, value string) string {
+	if isSensitiveHeader(name) {
+		return redactedHeaderValue
+	}
+	return value
+}
+
+func isSensitiveHeader(name string) bool {
+	switch strings.ToLower(name) {
+	case "authorization",
+		"proxy-authorization",
+		"x-api-key",
+		"x-goog-api-key",
+		"x-auth-token",
+		"x-access-token",
+		"x-amz-security-token",
+		"api-key",
+		"apikey",
+		"token",
+		"cookie",
+		"set-cookie":
+		return true
+	default:
+		return false
 	}
 }

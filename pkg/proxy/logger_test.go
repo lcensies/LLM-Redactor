@@ -19,6 +19,8 @@ func TestEnrichLogEvent(t *testing.T) {
 
 	h := http.Header{}
 	h.Add("Content-Type", "application/json")
+	h.Add("Authorization", "Bearer secret-token")
+	h.Add("Cookie", "session=abc123")
 
 	// Test regular JSON
 	body := []byte(`{"hello": "world"}`)
@@ -31,6 +33,15 @@ func TestEnrichLogEvent(t *testing.T) {
 	}
 	if !strings.Contains(out, `"name":"Content-Type"`) || !strings.Contains(out, `"value":"application/json"`) {
 		t.Errorf("Expected headers to be logged, got %s", out)
+	}
+	if !strings.Contains(out, `"name":"Authorization"`) || !strings.Contains(out, `"value":"[REDACTED]"`) {
+		t.Errorf("Expected authorization header to be redacted, got %s", out)
+	}
+	if strings.Contains(out, "secret-token") {
+		t.Errorf("Expected authorization value to be redacted, got %s", out)
+	}
+	if !strings.Contains(out, `"name":"Cookie"`) || !strings.Contains(out, `"value":"[REDACTED]"`) {
+		t.Errorf("Expected cookie header to be redacted, got %s", out)
 	}
 
 	// Test GZIP
