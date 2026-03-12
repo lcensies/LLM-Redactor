@@ -2,8 +2,12 @@ package proxy
 
 import (
 	"context"
+	"io"
+	"net/http"
+	"strings"
 	"testing"
 
+	"github.com/coder/websocket"
 	"github.com/rs/zerolog"
 	"github.com/wangyihang/llm-prism/pkg/utils/ctxkeys"
 )
@@ -28,4 +32,43 @@ func TestNew(t *testing.T) {
 		t.Fatal("Expected proxy, got nil")
 	}
 	_ = closeRelay(context.Background())
+}
+
+type chunkRedactor struct {
+	changed bool
+	lastIn  []byte
+}
+
+func (f *chunkRedactor) RedactRequest(ctx context.Context, body []byte) ([]byte, bool, error) {
+	f.lastIn = body
+	if f.changed {
+		return []byte(`{"redacted":true}`), true, nil
+	}
+	return body, false, nil
+}
+
+func (f *chunkRedactor) RedactWebSocket(ctx context.Context, messageType websocket.MessageType, data []byte) ([]byte, bool, error) {
+	return data, false, nil
+}
+
+func TestRedactRequestBody_RedactsChunkedBodies(t *testing.T) {
+	rdr := &chunkRedactor{changed: true}
+
+	body := io.NopCloser(strings.NewReader(`{"secret":"123"}`))
+	req, _ := http.NewRequest(http.MethodPost, "http://example.com", body)
+	req.ContentLength = -1
+
+	_ = redactRequestBody(rdr, "req-1", req)
+
+	if string(rdr.lastIn) != `{"secret":"123"}` {
+		t.Fatalf("unexpected redactor input: %s", string(rdr.lastIn))
+	}
+	if req.ContentLength != int64(len(`{"redacted":true}`)) {
+		t.Fatalf("expected content length updated, got %d", req.ContentLength)
+	}
+
+	readBack, _ := io.ReadAll(req.Body)
+	if string(readBack) != `{"redacted":true}` {
+		t.Fatalf("unexpected request body: %s", string(readBack))
+	}
 }

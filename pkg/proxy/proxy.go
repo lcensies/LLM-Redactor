@@ -78,32 +78,7 @@ func New(rdr ContentRedactor, sysLog, sysFileLog, trafficLog zerolog.Logger, ses
 		}
 
 		// Handle normal HTTP Request redaction
-		var requestBody []byte
-		if r.Body != nil && r.ContentLength > 0 && r.ContentLength < 10*1024*1024 {
-			var err error
-			requestBody, err = io.ReadAll(r.Body)
-			if err == nil {
-				reqCtx := context.Background()
-				reqCtx = context.WithValue(reqCtx, ctxkeys.RequestID, requestID)
-				reqCtx = context.WithValue(reqCtx, ctxkeys.Source, "request")
-				reqCtx = context.WithValue(reqCtx, ctxkeys.Host, r.Host)
-				reqCtx = context.WithValue(reqCtx, ctxkeys.Path, r.URL.Path)
-				reqCtx = context.WithValue(reqCtx, ctxkeys.Method, r.Method)
-
-				if rdr != nil {
-					redacted, changed, err := rdr.RedactRequest(reqCtx, requestBody)
-					if err == nil && changed {
-						r.Body = io.NopCloser(bytes.NewReader(redacted))
-						r.ContentLength = int64(len(redacted))
-						requestBody = redacted
-					} else {
-						r.Body = io.NopCloser(bytes.NewReader(requestBody))
-					}
-				} else {
-					r.Body = io.NopCloser(bytes.NewReader(requestBody))
-				}
-			}
-		}
+		requestBody := redactRequestBody(rdr, requestID, r)
 
 		ctx.UserData.(map[string]interface{})["request_body"] = requestBody
 		return r, nil
@@ -153,4 +128,33 @@ func New(rdr ContentRedactor, sysLog, sysFileLog, trafficLog zerolog.Logger, ses
 	})
 
 	return proxy, closeRelay
+}
+
+func redactRequestBody(rdr ContentRedactor, requestID string, r *http.Request) []byte {
+	if r == nil || r.Body == nil || r.ContentLength >= 10*1024*1024 {
+		return nil
+	}
+	requestBody, err := io.ReadAll(r.Body)
+	if err != nil {
+		return nil
+	}
+
+	reqCtx := context.Background()
+	reqCtx = context.WithValue(reqCtx, ctxkeys.RequestID, requestID)
+	reqCtx = context.WithValue(reqCtx, ctxkeys.Source, "request")
+	reqCtx = context.WithValue(reqCtx, ctxkeys.Host, r.Host)
+	reqCtx = context.WithValue(reqCtx, ctxkeys.Path, r.URL.Path)
+	reqCtx = context.WithValue(reqCtx, ctxkeys.Method, r.Method)
+
+	if rdr != nil {
+		redacted, changed, err := rdr.RedactRequest(reqCtx, requestBody)
+		if err == nil && changed {
+			r.Body = io.NopCloser(bytes.NewReader(redacted))
+			r.ContentLength = int64(len(redacted))
+			return redacted
+		}
+	}
+
+	r.Body = io.NopCloser(bytes.NewReader(requestBody))
+	return requestBody
 }
