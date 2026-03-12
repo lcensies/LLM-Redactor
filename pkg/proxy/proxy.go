@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"io"
+	"log"
 	"net/http"
 	"strings"
 	"time"
@@ -14,6 +15,18 @@ import (
 	"github.com/wangyihang/llm-prism/pkg/utils/ctxkeys"
 )
 
+// proxyLogWriter implements io.Writer to adapt standard library log to zerolog.
+type proxyLogWriter struct {
+	logger zerolog.Logger
+}
+
+func (w *proxyLogWriter) Write(p []byte) (n int, err error) {
+	msg := strings.TrimSpace(string(p))
+	// Log all goproxy internals to the file-only logger at debug level
+	w.logger.Debug().Msg(msg)
+	return len(p), nil
+}
+
 // ContentRedactor defines the redaction capabilities required by the proxy layer.
 // This interface decouples the proxy from the concrete redactor implementation.
 type ContentRedactor interface {
@@ -22,9 +35,10 @@ type ContentRedactor interface {
 }
 
 // New creates a new goproxy.ProxyHttpServer configured for LLM traffic interception.
-func New(rdr ContentRedactor, sysLog, trafficLog zerolog.Logger, sessionDir string) *goproxy.ProxyHttpServer {
+func New(rdr ContentRedactor, sysLog, sysFileLog, trafficLog zerolog.Logger, sessionDir string) *goproxy.ProxyHttpServer {
 	proxy := goproxy.NewProxyHttpServer()
 	proxy.Verbose = false
+	proxy.Logger = log.New(&proxyLogWriter{logger: sysFileLog}, "", 0)
 
 	caPath, err := GenerateAndSetCA(sessionDir)
 	if err != nil {

@@ -13,9 +13,10 @@ func init() {
 }
 
 type Loggers struct {
-	System    zerolog.Logger
-	Traffic   zerolog.Logger
-	Detection zerolog.Logger
+	System     zerolog.Logger
+	SystemFile zerolog.Logger
+	Traffic    zerolog.Logger
+	Detection  zerolog.Logger
 }
 
 func New(appLogFile, trafficLogFile, detectionLogFile string) *Loggers {
@@ -38,14 +39,23 @@ func New(appLogFile, trafficLogFile, detectionLogFile string) *Loggers {
 	}
 
 	var appWriter io.Writer
+	var appFileWriter io.Writer
 	if appFile != nil {
 		appWriter = zerolog.MultiLevelWriter(consoleWriter, appFile)
+		appFileWriter = appFile
 	} else {
 		appWriter = consoleWriter
+		appFileWriter = io.Discard
 	}
 
 	sysLog := zerolog.New(appWriter).
 		Level(zerolog.InfoLevel).
+		With().
+		Timestamp().
+		Logger()
+
+	sysFileLog := zerolog.New(appFileWriter).
+		Level(zerolog.DebugLevel).
 		With().
 		Timestamp().
 		Logger()
@@ -61,8 +71,9 @@ func New(appLogFile, trafficLogFile, detectionLogFile string) *Loggers {
 		Logger()
 
 	return &Loggers{
-		System:    sysLog,
-		Traffic:   trafficLog,
-		Detection: detectionLog,
+		System:     sysLog,
+		SystemFile: sysFileLog,
+		Traffic:    trafficLog,
+		Detection:  detectionLog,
 	}
 }

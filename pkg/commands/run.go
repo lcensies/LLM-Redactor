@@ -48,7 +48,7 @@ func StartProxy(cli *config.CLI, logs *logging.Loggers, host string, port int) (
 	}
 
 	sessionDir := filepath.Dir(cli.AppLogFile)
-	p := proxy.New(contentRedactor, logs.System, logs.Traffic, sessionDir)
+	p := proxy.New(contentRedactor, logs.System, logs.SystemFile, logs.Traffic, sessionDir)
 
 	addr := fmt.Sprintf("%s:%d", host, port)
 	ln, err := net.Listen("tcp", addr)
