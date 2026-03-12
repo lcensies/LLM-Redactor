@@ -28,3 +28,17 @@ go install github.com/wangyihang/llm-prism@latest
 ```bash
 llm-prism exec -- claude
 ```
+
+## Example: Preventing Credential Leaks
+
+**Scenario:** You have a `DEEPSEEK_API_KEY` stored in your environment and accidentally ask Claude to *"Summarize my .env file"*.
+
+**Without `llm-prism`:** Your sensitive API keys are sent directly to the LLM provider.
+
+![Insecure Request](./figures/01.png)
+
+**With `llm-prism` active:** The proxy intercepts the request and redacts secrets locally before they ever leave your machine.
+
+![Protected Request](./figures/02.png)
+
+All detections are logged locally to `llm-prism-detections.jsonl` for easy auditing.
