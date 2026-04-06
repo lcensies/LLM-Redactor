@@ -210,3 +210,57 @@ func TestRegexDetectorReplaceEngineCompanyInJSONURLValueRoundTrip(t *testing.T) 
 		t.Fatalf("round-trip: got %q want %q", restored, in)
 	}
 }
+
+// Regression: Unredact must replace longer fakes before shorter ones. Map iteration
+// order is random; without a deterministic order, restoring "ab" can corrupt a
+// neighboring fake "abc" in paths, URLs, or tool/edit output that contains both.
+func TestRegexDetectorUnredactLongestFakeFirst(t *testing.T) {
+	d := NewRegexDetector([]RegexRule{makeRule("co", `_nomatch_`, "company")})
+	ps := d.pseudonymizers["company"]
+	ps.mu.Lock()
+	ps.fakeToReal["ab"] = "REAL_SHORT"
+	ps.fakeToReal["abc"] = "REAL_LONG"
+	ps.realToFake["REAL_SHORT"] = "ab"
+	ps.realToFake["REAL_LONG"] = "abc"
+	ps.mu.Unlock()
+
+	in := `file:///tmp/ab/abc/final`
+	want := `file:///tmp/REAL_SHORT/REAL_LONG/final`
+	if got := d.Unredact(in); got != want {
+		t.Fatalf("Unredact: got %q want %q", got, want)
+	}
+}
+
+func TestRegexDetectorSharedSessionMapPerReplaceEngine(t *testing.T) {
+	d := NewRegexDetector([]RegexRule{
+		makeRule("vendor-rule", `(?i)\bacme corp\b`, "company"),
+		makeRule("contract-rule", `(?i)\bfoo inc\b`, "company"),
+	})
+	if len(d.pseudonymizers) != 1 {
+		t.Fatalf("expected one session pseudonymizer for all company rules, got %d", len(d.pseudonymizers))
+	}
+	ps := d.pseudonymizers["company"]
+	if ps == nil {
+		t.Fatal("missing company pseudonymizer")
+	}
+
+	fakeAcme := ps.GetOrCreate("Acme Corp")
+	if again := ps.GetOrCreate("Acme Corp"); again != fakeAcme {
+		t.Fatalf("same real must reuse session fake: got %q want %q", again, fakeAcme)
+	}
+	if fakeFoo := ps.GetOrCreate("Foo Inc"); fakeFoo == fakeAcme {
+		t.Fatal("different companies should not collide on the same fake")
+	}
+
+	ctx := context.Background()
+	in := "Acme Corp licenses to Foo Inc."
+	redacted := d.Redact(ctx, in, nopCallback)
+	if strings.Contains(redacted, "Acme Corp") || strings.Contains(redacted, "Foo Inc") {
+		t.Fatalf("expected both redacted: %q", redacted)
+	}
+
+	restored := d.Unredact(redacted)
+	if restored != in {
+		t.Fatalf("round-trip: got %q want %q", restored, in)
+	}
+}
