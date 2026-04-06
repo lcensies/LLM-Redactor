@@ -443,6 +443,22 @@ func TestStreamUnredactReaderTokenSplitAcrossChunks(t *testing.T) {
 		// A self-hosted git URL (not a well-known host) so it gets pseudonymized.
 		streamSplitRoundTrip(t, r, "https://gitlab.internal.mycompany.com/myorg/myrepo\n")
 	})
+
+	t.Run("CompanyInURL", func(t *testing.T) {
+		rules := []Rule{{
+			ID:            "co",
+			Description:   "company name in URL-like text",
+			RawRegex:      `(?i)\bacme corp\b`,
+			ReplaceEngine: "company",
+		}}
+		if err := rules[0].Compile(); err != nil {
+			t.Fatal(err)
+		}
+		r := newTestRedactor(rules, zerolog.Nop())
+		defer r.Close()
+		// Space in path: internal wikis / ticket titles pasted into URLs.
+		streamSplitRoundTrip(t, r, `https://wiki.internal.example/Acme Corp/Playbook`)
+	})
 }
 
 // multiChunkReader returns one fixed chunk per Read call, then EOF.

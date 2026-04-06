@@ -171,3 +171,42 @@ func TestRegexDetectorReplaceEngineRoundTripMultipleValues(t *testing.T) {
 		t.Errorf("round-trip failed: got %q", restored)
 	}
 }
+
+// URL-shaped and log-shaped payloads: company regex must not break on slashes,
+// hyphens, or JSON delimiters, and Unredact (substring replace) must restore
+// the real name inside the original URL/text.
+func TestRegexDetectorReplaceEngineCompanyInURLPathRoundTrip(t *testing.T) {
+	d := NewRegexDetector([]RegexRule{makeRule("co", `(?i)\bacme corp\b`, "company")})
+	ctx := context.Background()
+	in := `https://confluence.internal.example/display/Acme Corp/Runbook`
+	redacted := d.Redact(ctx, in, nopCallback)
+	if strings.Contains(redacted, "Acme Corp") || strings.Contains(redacted, "acme corp") {
+		t.Fatalf("expected redaction, got %q", redacted)
+	}
+	restored := d.Unredact(redacted)
+	if restored != in {
+		t.Fatalf("round-trip: got %q want %q", restored, in)
+	}
+}
+
+func TestRegexDetectorReplaceEngineCompanyHyphenWrappedInURLLikeLineRoundTrip(t *testing.T) {
+	d := NewRegexDetector([]RegexRule{makeRule("co", `(?i)\bacme corp\b`, "company")})
+	ctx := context.Background()
+	in := `GET https://jira.example/browse/prefix-Acme Corp-suffix HTTP/1.1`
+	redacted := d.Redact(ctx, in, nopCallback)
+	restored := d.Unredact(redacted)
+	if restored != in {
+		t.Fatalf("round-trip: got %q want %q", restored, in)
+	}
+}
+
+func TestRegexDetectorReplaceEngineCompanyInJSONURLValueRoundTrip(t *testing.T) {
+	d := NewRegexDetector([]RegexRule{makeRule("co", `(?i)\bacme corp\b`, "company")})
+	ctx := context.Background()
+	in := `{"wiki":"https://wiki.internal/space/Acme Corp/home","ok":true}`
+	redacted := d.Redact(ctx, in, nopCallback)
+	restored := d.Unredact(redacted)
+	if restored != in {
+		t.Fatalf("round-trip: got %q want %q", restored, in)
+	}
+}
