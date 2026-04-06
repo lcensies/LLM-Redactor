@@ -6,6 +6,44 @@ import (
 	"testing"
 )
 
+func TestIPDetectorIPv6DoubleColonNotInsideIdentifiers(t *testing.T) {
+	d := NewIPDetector(false)
+	ctx := context.Background()
+	for _, in := range []string{
+		"namespace::func",
+		"foo::bar",
+		"myns::dead:beef",
+	} {
+		t.Run(in, func(t *testing.T) {
+			out := d.Redact(ctx, in, func(match, _, _ string) string {
+				t.Fatalf("should not redact scope-like :: tokens, hit %q in %q", match, in)
+				return ""
+			})
+			if out != in {
+				t.Fatalf("expected unchanged %q, got %q", in, out)
+			}
+		})
+	}
+}
+
+func TestIPDetectorIPv6BracketedAndSpacedStillRedacted(t *testing.T) {
+	d := NewIPDetector(false)
+	ctx := context.Background()
+	for _, in := range []string{"[::1]", "addr ::1 tail", "\t::1\n"} {
+		var hits int
+		out := d.Redact(ctx, in, func(_, _, _ string) string {
+			hits++
+			return ""
+		})
+		if hits != 1 {
+			t.Fatalf("%q: expected 1 redaction hit, got %d", in, hits)
+		}
+		if strings.Contains(out, "::1") {
+			t.Fatalf("%q: expected ::1 replaced, got %q", in, out)
+		}
+	}
+}
+
 func TestIPDetectorIPv6BareDoubleColonNotMatched(t *testing.T) {
 	d := NewIPDetector(false)
 	ctx := context.Background()

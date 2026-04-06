@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"regexp"
+	"strings"
 	"sync"
 )
 
@@ -108,6 +109,25 @@ func cidrSuffixIndex(s string) int {
 	return -1
 }
 
+// ipv6MatchHasTokenBoundaries rejects IPv6-shaped substrings embedded in identifiers
+// (for example "namespace::func" → "::f", or "foo::bar" → "::ba") while keeping
+// real addresses delimited by punctuation, brackets, or whitespace.
+func ipv6MatchHasTokenBoundaries(s string, start, end int) bool {
+	if start > 0 {
+		c := s[start-1]
+		if (c >= '0' && c <= '9') || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') {
+			return false
+		}
+	}
+	if end < len(s) {
+		c := s[end]
+		if (c >= '0' && c <= '9') || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') {
+			return false
+		}
+	}
+	return true
+}
+
 // isRFC3849DocumentationIPv6 reports whether addr is in 2001:db8::/32 (RFC 3849).
 func isRFC3849DocumentationIPv6(match string) bool {
 	addr := match
@@ -180,17 +200,7 @@ func (d *IPDetector) Type() string { return "ip" }
 // ranges and invokes callback for logging/stats (passing the real IP).
 func (d *IPDetector) Redact(ctx context.Context, content string, callback RedactionCallback) string {
 	// IPv6 first so IPv4 substrings inside IPv4-mapped addresses are not torn apart.
-	content = d.ipv6.ReplaceAllStringFunc(content, func(match string) string {
-		if isRFC3849DocumentationIPv6(match) {
-			return match
-		}
-		if d.excludePrivateLoopback && ipMatchIsPrivateOrLoopback(match) {
-			return match
-		}
-		fake := d.pseudonymizer.GetOrCreate(match, true)
-		callback(match, "ipv6-address", "IPv6 Address")
-		return fake
-	})
+	content = d.redactIPv6WithBoundaries(content, callback)
 	content = d.ipv4.ReplaceAllStringFunc(content, func(match string) string {
 		if d.excludePrivateLoopback && ipMatchIsPrivateOrLoopback(match) {
 			return match
@@ -202,14 +212,45 @@ func (d *IPDetector) Redact(ctx context.Context, content string, callback Redact
 	return content
 }
 
+func (d *IPDetector) redactIPv6WithBoundaries(content string, callback RedactionCallback) string {
+	indices := d.ipv6.FindAllStringIndex(content, -1)
+	if len(indices) == 0 {
+		return content
+	}
+	var b strings.Builder
+	b.Grow(len(content) + 64)
+	last := 0
+	for _, loc := range indices {
+		start, end := loc[0], loc[1]
+		b.WriteString(content[last:start])
+		match := content[start:end]
+		if !ipv6MatchHasTokenBoundaries(content, start, end) {
+			b.WriteString(match)
+			last = end
+			continue
+		}
+		if isRFC3849DocumentationIPv6(match) {
+			b.WriteString(match)
+			last = end
+			continue
+		}
+		if d.excludePrivateLoopback && ipMatchIsPrivateOrLoopback(match) {
+			b.WriteString(match)
+			last = end
+			continue
+		}
+		fake := d.pseudonymizer.GetOrCreate(match, true)
+		callback(match, "ipv6-address", "IPv6 Address")
+		b.WriteString(fake)
+		last = end
+	}
+	b.WriteString(content[last:])
+	return b.String()
+}
+
 // Unredact replaces any fake IPs in content with the original real IPs.
 func (d *IPDetector) Unredact(content string) string {
-	content = d.ipv6.ReplaceAllStringFunc(content, func(key string) string {
-		if real, ok := d.pseudonymizer.Restore(key); ok {
-			return real
-		}
-		return key
-	})
+	content = d.unredactIPv6WithBoundaries(content)
 	content = d.ipv4.ReplaceAllStringFunc(content, func(match string) string {
 		if real, ok := d.pseudonymizer.Restore(match); ok {
 			return real
@@ -217,4 +258,32 @@ func (d *IPDetector) Unredact(content string) string {
 		return match
 	})
 	return content
+}
+
+func (d *IPDetector) unredactIPv6WithBoundaries(content string) string {
+	indices := d.ipv6.FindAllStringIndex(content, -1)
+	if len(indices) == 0 {
+		return content
+	}
+	var b strings.Builder
+	b.Grow(len(content))
+	last := 0
+	for _, loc := range indices {
+		start, end := loc[0], loc[1]
+		b.WriteString(content[last:start])
+		key := content[start:end]
+		if !ipv6MatchHasTokenBoundaries(content, start, end) {
+			b.WriteString(key)
+			last = end
+			continue
+		}
+		if real, ok := d.pseudonymizer.Restore(key); ok {
+			b.WriteString(real)
+		} else {
+			b.WriteString(key)
+		}
+		last = end
+	}
+	b.WriteString(content[last:])
+	return b.String()
 }
