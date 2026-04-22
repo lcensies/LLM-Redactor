@@ -174,6 +174,7 @@ func New(configPath string, sysLog, detectionLog zerolog.Logger) (*Redactor, err
 			Description:   rule.Description,
 			Regex:         rule.Regex,
 			ReplaceEngine: rule.ReplaceEngine,
+			Keywords:      rule.Keywords,
 		})
 	}
 
@@ -417,6 +418,65 @@ func (r *Redactor) redactValueJSON(ctx context.Context, v interface{}, inJSONSch
 	}
 }
 
+// unredactValueJSON walks JSON like redactValueJSON, but only applies UnredactContent
+// to string values outside preserved subtrees. Strings inside JSON Schema payloads
+// (and signed Anthropic thinking under assistant) are left unchanged so
+// global ReplaceAll cannot corrupt schema text or break signatures.
+func (r *Redactor) unredactValueJSON(v interface{}, inJSONSchema, inAnthropicThinking, inAssistantMessage bool, path []string) (interface{}, bool) {
+	any := false
+	switch val := v.(type) {
+	case string:
+		preserve := inJSONSchema || (inAnthropicThinking && inAssistantMessage)
+		if preserve {
+			return val, false
+		}
+		out := r.UnredactContent(val)
+		if out != val {
+			return out, true
+		}
+		return val, false
+	case map[string]interface{}:
+		inAsst := inAssistantMessage
+		if isMessagesArrayElementPath(path) {
+			if messageHasAssistantRole(val) {
+				inAsst = true
+			} else {
+				inAsst = false
+			}
+		}
+		thinkingHere := anthropicSignedThinkingBlock(val)
+		for k, child := range val {
+			nextSchema := inJSONSchema || schemaSubtreeEntry(path, k)
+			nextThinking := inAnthropicThinking || thinkingHere
+			childPath := append(slices.Clone(path), k)
+			restored, changed := r.unredactValueJSON(child, nextSchema, nextThinking, inAsst, childPath)
+			if changed {
+				val[k] = restored
+				any = true
+			}
+		}
+		return val, any
+	case []interface{}:
+		arrPath := append(slices.Clone(path), "*")
+		for i, child := range val {
+			restored, changed := r.unredactValueJSON(child, inJSONSchema, inAnthropicThinking, inAssistantMessage, arrPath)
+			if changed {
+				val[i] = restored
+				any = true
+			}
+		}
+		return val, any
+	default:
+		return v, false
+	}
+}
+
+// UnredactValue walks a JSON value and applies path-aware unredact (skips
+// schema subtrees; see unredactValueJSON).
+func (r *Redactor) UnredactValue(v interface{}) (interface{}, bool) {
+	return r.unredactValueJSON(v, false, false, false, nil)
+}
+
 // RedactRequest redacts all string values in a JSON request body.
 // Returns the original body if no secrets were detected, preserving formatting and signatures.
 // Returns (redactedBody, changed, error).
@@ -451,18 +511,40 @@ func (r *Redactor) UnredactContent(content string) string {
 }
 
 // UnredactResponse restores pseudonymized values in a JSON response body.
+// For well-formed top-level JSON, unredact is path-aware: strings inside
+// json_schema / input_schema / output_schema and function parameters are
+// not touched (see schemaSubtreeEntry). For non-JSON or invalid JSON, the
+// whole body is still passed through UnredactContent.
 // Returns the restored body (and true) only when at least one substitution
 // was made; otherwise returns the original body unchanged.
 func (r *Redactor) UnredactResponse(body []byte) ([]byte, bool, error) {
 	if len(body) == 0 {
 		return body, false, nil
 	}
-
-	restored := r.UnredactContent(string(body))
-	if restored == string(body) {
+	if !json.Valid(body) {
+		restored := r.UnredactContent(string(body))
+		if restored == string(body) {
+			return body, false, nil
+		}
+		return []byte(restored), true, nil
+	}
+	var data interface{}
+	if err := json.Unmarshal(body, &data); err != nil {
+		restored := r.UnredactContent(string(body))
+		if restored == string(body) {
+			return body, false, nil
+		}
+		return []byte(restored), true, nil
+	}
+	out, changed := r.unredactValueJSON(data, false, false, false, nil)
+	if !changed {
 		return body, false, nil
 	}
-	return []byte(restored), true, nil
+	res, err := json.Marshal(out)
+	if err != nil {
+		return body, false, err
+	}
+	return res, true, nil
 }
 
 // RedactWebSocket redacts WebSocket messages.
@@ -481,110 +563,14 @@ func (r *Redactor) RedactWebSocket(ctx context.Context, messageType websocket.Me
 	return []byte(redacted), changed, nil
 }
 
-// streamUnredactReader wraps an io.ReadCloser and restores pseudonymized
-// values (e.g. fake IPs → real IPs) in each chunk as it is read.
-//
-// Token-split safety: the longest fake token the redactor emits is a fully-
-// expanded RFC 3849 IPv6 address ("2001:db8:0:0:0:0:0:ff" ≈ 22 bytes). To
-// prevent a token from being split across two consecutive Read calls and
-// therefore going unrestored, we retain up to maxTokenLen bytes at the tail of
-// each chunk as a "seam" that is prepended to the next chunk before running
-// UnredactContent. Only bytes before the seam are returned to the caller.
-// On EOF the seam is flushed without trimming.
-type streamUnredactReader struct {
-	r        io.ReadCloser
-	unredact func(string) string
-	seam     []byte // tail of the previous chunk, held back to cover split tokens
-	overflow []byte // restored bytes that exceed the caller's buffer
-}
-
-// maxTokenLen is the upper bound on the byte length of any fake token the
-// redactor can emit across all detectors:
-//
-//   - IPv6 (fully expanded RFC 3849): "2001:db8:0:0:0:0:0:ff"       ≈  22 bytes
-//   - Email (faker generated):        "name.surname@sub.example.org" ≈  60 bytes
-//   - Git URL (faker generated):      "https://sub.host.tld/user/word.git" ≈ 80 bytes
-//
-// 256 is a round, conservative ceiling that covers all of the above and leaves
-// ample room for future detectors, while remaining negligible compared to a
-// typical SSE chunk (usually 100–4000 bytes).
-const maxTokenLen = 256
-
-func (s *streamUnredactReader) Read(p []byte) (int, error) {
-	// Drain overflow from a previous over-large restored chunk first.
-	if len(s.overflow) > 0 {
-		n := copy(p, s.overflow)
-		s.overflow = s.overflow[n:]
-		return n, nil
-	}
-
-	n, err := s.r.Read(p)
-	if n == 0 && err != nil {
-		// EOF (or error): flush the seam if any.
-		if len(s.seam) == 0 {
-			return 0, err
-		}
-		restored := []byte(s.unredact(string(s.seam)))
-		s.seam = s.seam[:0]
-		if len(restored) <= len(p) {
-			copy(p, restored)
-			return len(restored), err
-		}
-		copy(p, restored[:len(p)])
-		s.overflow = append(s.overflow[:0], restored[len(p):]...)
-		return len(p), err
-	}
-
-	// Combine previous seam with new chunk and unredact together.
-	combined := append(s.seam, p[:n]...)
-
-	// Hold back the last maxTokenLen bytes as the new seam (unless this is
-	// the final read, signalled by err != nil).  When combined is shorter
-	// than maxTokenLen we keep everything in the seam and return nothing —
-	// the seam will be flushed when the underlying reader signals EOF.
-	var toProcess []byte
-	if err != nil {
-		// Final read: flush everything.
-		toProcess = combined
-		s.seam = s.seam[:0]
-	} else if len(combined) > maxTokenLen {
-		seamStart := len(combined) - maxTokenLen
-		toProcess = combined[:seamStart]
-		s.seam = append(s.seam[:0], combined[seamStart:]...)
-	} else {
-		// Not enough data to safely process yet; keep accumulating.
-		s.seam = append(s.seam[:0], combined...)
-		return 0, nil
-	}
-
-	if len(toProcess) == 0 {
-		return 0, nil
-	}
-
-	restored := []byte(s.unredact(string(toProcess)))
-	if len(restored) <= len(p) {
-		copy(p, restored)
-		return len(restored), nil
-	}
-
-	// Restored content is larger than the caller's buffer.
-	copy(p, restored[:len(p)])
-	s.overflow = append(s.overflow[:0], restored[len(p):]...)
-	return len(p), nil
-}
-
-func (s *streamUnredactReader) Close() error {
-	return s.r.Close()
-}
-
 // WrapStreamUnredactor wraps body so that pseudonymized values are restored
-// as the stream is consumed. Safe to call with a nil body (returns nil).
+// as the stream is consumed. SSE/NDJSON lines that contain a JSON value are
+// parsed and unredactValueJSON is applied (skipping schema subtrees) so blind
+// ReplaceAll never corrupts JSON delimiters. Non-JSON lines fall back to
+// UnredactContent on the line. Safe to call with a nil body (returns nil).
 func (r *Redactor) WrapStreamUnredactor(body io.ReadCloser) io.ReadCloser {
 	if body == nil {
 		return nil
 	}
-	return &streamUnredactReader{
-		r:        body,
-		unredact: r.UnredactContent,
-	}
+	return newStreamUnredactLineReader(r, body)
 }

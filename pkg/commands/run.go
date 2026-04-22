@@ -50,7 +50,10 @@ func StartProxy(cli *config.CommonConfig, logs *logging.Loggers, host string, po
 	}
 
 	sessionDir := filepath.Dir(cli.AppLogFile)
-	p, closeRelay := proxy.New(contentRedactor, logs.System, logs.SystemFile, logs.Traffic, sessionDir)
+	if cli.DebugStream {
+		logs.System.Info().Msg("streaming debug: per-request stream-debug/<id>.upstream.raw (from origin) and .raw (after unredact) + stream-debug.jsonl in session dir")
+	}
+	p, closeRelay := proxy.New(contentRedactor, logs.System, logs.SystemFile, logs.Traffic, sessionDir, cli.DebugStream)
 
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Store the ResponseWriter in the context so that it can be hijacked

@@ -29,6 +29,7 @@ func newTestRedactorWithBuffer(rules []Rule, log zerolog.Logger, buffer int, sta
 			Description:   rule.Description,
 			Regex:         rule.Regex,
 			ReplaceEngine: rule.ReplaceEngine,
+			Keywords:      rule.Keywords,
 		})
 	}
 	r := &Redactor{
@@ -44,6 +45,25 @@ func newTestRedactorWithBuffer(rules []Rule, log zerolog.Logger, buffer int, sta
 		close(r.done)
 	}
 	return r
+}
+
+func TestRedactNixFlakePrefetchNoFalsePositive(t *testing.T) {
+	// Gitleaks' sourcegraph-access-token rule matches 40-char hex; upstream only
+	// runs it when "sourcegraph" or "sgp_" appears. We must do the same so git
+	// revs in flake refs are not masked as secrets.
+	r, err := New("", zerolog.Nop(), zerolog.Nop())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	s := `nix --extra-experimental-features 'nix-command flakes' flake prefetch "github:NixOS/nixpkgs/a87aaeeb478bc30b14a4abab7dedc809b7eaf7ef"`
+	out, changed := r.RedactContent(context.Background(), s)
+	if changed {
+		t.Fatalf("expected no redaction; got changed=true out=%q", out)
+	}
+	if out != s {
+		t.Fatalf("content changed:\n%s", out)
+	}
 }
 
 func TestRuleFiltering(t *testing.T) {
@@ -401,6 +421,48 @@ func streamSplitRoundTrip(t *testing.T, r *Redactor, real string) {
 // TestStreamUnredactReaderTokenSplitAcrossChunks verifies that fake tokens
 // whose bytes are split exactly across two Read calls are still restored,
 // for every detector type that implements Unredactor.
+func TestUnredactValueJSON_SkipsSchemaSubtrees(t *testing.T) {
+	r := &Redactor{
+		config:    &Config{},
+		logs:      zerolog.Nop(),
+		detectors: []detectors.Detector{detectors.NewIPDetector(false)},
+		eventCh:   make(chan detectionEvent, eventChannelSize),
+		done:      make(chan struct{}),
+	}
+	go r.processEvents()
+	defer r.Close()
+	ctx := context.Background()
+	const realIP = "203.0.113.5"
+	red, changed := r.RedactContent(ctx, "before "+realIP+" after")
+	if !changed {
+		t.Fatal("expected IP redaction")
+	}
+	// red contains TEST-NET fake; unredact should restore in normal fields
+	// but not inside input_schema.
+	v := map[string]interface{}{
+		"input_schema": map[string]interface{}{"d": "schema " + red + " tail"},
+		"choices": []interface{}{
+			map[string]interface{}{
+				"delta": map[string]interface{}{"content": "body " + red + " end"},
+			},
+		},
+	}
+	out, u := r.unredactValueJSON(v, false, false, false, nil)
+	if !u {
+		t.Fatal("expected unredact in non-schema field")
+	}
+	om := out.(map[string]interface{})
+	schema := om["input_schema"].(map[string]interface{})["d"].(string)
+	if !strings.Contains(schema, "192.0.2.") || strings.Contains(schema, realIP) {
+		t.Fatalf("schema string must keep fake IP, got %q", schema)
+	}
+	ch0 := om["choices"].([]interface{})[0].(map[string]interface{})
+	delta := ch0["delta"].(map[string]interface{})["content"].(string)
+	if !strings.Contains(delta, realIP) || strings.Contains(delta, "192.0.2.") {
+		t.Fatalf("delta should restore real IP, got %q", delta)
+	}
+}
+
 func TestStreamUnredactReaderTokenSplitAcrossChunks(t *testing.T) {
 	t.Run("IPv6", func(t *testing.T) {
 		r := &Redactor{

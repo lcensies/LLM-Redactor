@@ -27,7 +27,7 @@ func (w *proxyLogWriter) Write(p []byte) (n int, err error) {
 
 // New creates a new goproxy.ProxyHttpServer configured for LLM traffic interception.
 // It returns the proxy and a cleanup function for internal services.
-func New(rdr ContentRedactor, sysLog, sysFileLog, trafficLog zerolog.Logger, sessionDir string) (*goproxy.ProxyHttpServer, func(context.Context) error) {
+func New(rdr ContentRedactor, sysLog, sysFileLog, trafficLog zerolog.Logger, sessionDir string, debugStream bool) (*goproxy.ProxyHttpServer, func(context.Context) error) {
 	proxy := goproxy.NewProxyHttpServer()
 	proxy.Verbose = true
 	proxy.Logger = log.New(&proxyLogWriter{logger: sysFileLog}, "", 0)
@@ -161,10 +161,26 @@ func New(rdr ContentRedactor, sysLog, sysFileLog, trafficLog zerolog.Logger, ses
 				resp.Body = io.NopCloser(io.MultiReader(bytes.NewReader(responseBody), tail))
 				resp.ContentLength = -1
 			}
-		} else if isStream && resp.Body != nil && rdr != nil {
-			// For streaming responses (SSE/NDJSON), wrap the body so that
-			// pseudonymized values are restored chunk-by-chunk as data flows.
-			resp.Body = rdr.WrapStreamUnredactor(resp.Body)
+		} else if isStream && resp.Body != nil {
+			// For streaming responses (SSE/NDJSON), optional capture of the raw
+			// origin stream before unredact, then unredact, then optional capture
+			// of what the client sees (for comparison: upstream vs after unredact).
+			var dbgLine *streamDebugLine
+			if debugStream {
+				dbgLine = &streamDebugLine{
+					ID:     requestID,
+					Method: ctx.Req.Method,
+					Path:   ctx.Req.URL.Path,
+					Host:   ctx.Req.Host,
+				}
+				resp.Body = newStreamUpstreamTeeReadCloser(sysLog, sessionDir, dbgLine, resp.Body)
+			}
+			if rdr != nil {
+				resp.Body = rdr.WrapStreamUnredactor(resp.Body)
+			}
+			if debugStream && dbgLine != nil {
+				resp.Body = newStreamDebugReadCloser(sysLog, sessionDir, dbgLine, resp.Body)
+			}
 			resp.ContentLength = -1 // length unknown after transform
 		}
 

@@ -6,7 +6,11 @@ type CommonConfig struct {
 	TrafficLogFile   string `help:"Traffic log file" env:"LLM_REDACTOR_TRAFFIC_LOG_FILE" default:"traffic.jsonl"`
 	DetectionLogFile string `help:"Detection log file" env:"LLM_REDACTOR_DETECTION_LOG_FILE" default:"detections.jsonl"`
 	RedactorRules    string `help:"Redactor rules file (TOML or JSON)" env:"LLM_REDACTOR_REDACTOR_RULES" default:"~/.gitleaks.toml"`
-	Version          bool   `help:"Show version information" short:"v"`
+	// If true, spool each full streaming response (SSE, NDJSON, etc.): origin bytes
+	// to stream-debug/<id>.upstream.raw, client bytes after unredact to
+	// stream-debug/<id>.raw, and index lines in stream-debug.jsonl.
+	DebugStream bool   `help:"Log streaming responses under stream-debug/ (origin .upstream.raw + client .raw) (off by default)" env:"LLM_REDACTOR_DEBUG_STREAM" name:"debug-stream"`
+	Version       bool   `help:"Show version information" short:"v"`
 }
 
 type ExecCLI struct {

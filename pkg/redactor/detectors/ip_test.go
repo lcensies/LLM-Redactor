@@ -132,3 +132,16 @@ func TestIPDetectorStillRedactsPublicWhenExcludingPrivate(t *testing.T) {
 		t.Fatalf("public/doc-range IP should be pseudonymized, got %q", out)
 	}
 }
+
+func TestIPDetectorSkipsUnspecified(t *testing.T) {
+	d := NewIPDetector(false)
+	ctx := context.Background()
+	in := "bind 0.0.0.0:8080 route 0.0.0.0/0 tail ::ffff:0.0.0.0 done"
+	out := d.Redact(ctx, in, func(match, _, _ string) string {
+		t.Fatalf("unspecified addresses must not be redacted, hit %q", match)
+		return ""
+	})
+	if out != in {
+		t.Fatalf("expected unchanged %q, got %q", in, out)
+	}
+}

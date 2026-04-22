@@ -55,6 +55,9 @@ func (g *GitleaksDetector) Type() string {
 func (g *GitleaksDetector) Redact(ctx context.Context, content string, callback RedactionCallback) string {
 	for _, rule := range g.rules {
 		r := rule // capture
+		if !ContentMatchesRuleKeywords(content, r.Keywords) {
+			continue
+		}
 		content = r.Regex.ReplaceAllStringFunc(content, func(match string) string {
 			if match == "" {
 				return match

@@ -11,6 +11,7 @@ type Rule struct {
 	Regex         *regexp.Regexp `toml:"-" json:"-"`
 	RawRegex      string         `toml:"regex" json:"regex"`
 	ReplaceEngine string         `toml:"replace_engine" json:"replace_engine"`
+	Keywords      []string       `toml:"keywords" json:"keywords"`
 }
 
 type Config struct {

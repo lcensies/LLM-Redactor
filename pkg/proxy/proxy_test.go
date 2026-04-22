@@ -27,7 +27,7 @@ func TestContextKeys(t *testing.T) {
 }
 
 func TestNew(t *testing.T) {
-	p, closeRelay := New(nil, zerolog.Nop(), zerolog.Nop(), zerolog.Nop(), "/tmp")
+	p, closeRelay := New(nil, zerolog.Nop(), zerolog.Nop(), zerolog.Nop(), "/tmp", false)
 	if p == nil {
 		t.Fatal("Expected proxy, got nil")
 	}

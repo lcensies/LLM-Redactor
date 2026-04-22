@@ -12,6 +12,7 @@ type RegexRule struct {
 	Description   string
 	Regex         *regexp.Regexp
 	ReplaceEngine string
+	Keywords      []string
 }
 
 type RegexDetector struct {
@@ -42,6 +43,9 @@ func (d *RegexDetector) Type() string {
 func (d *RegexDetector) Redact(ctx context.Context, content string, callback RedactionCallback) string {
 	for _, rule := range d.rules {
 		rule := rule // capture for closure
+		if !ContentMatchesRuleKeywords(content, rule.Keywords) {
+			continue
+		}
 		if rule.ReplaceEngine != "" {
 			ps := d.pseudonymizers[rule.ReplaceEngine]
 			content = rule.Regex.ReplaceAllStringFunc(content, func(match string) string {

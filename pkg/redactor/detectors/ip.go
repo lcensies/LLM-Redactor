@@ -194,6 +194,21 @@ func ipMatchIsPrivateOrLoopback(match string) bool {
 	return ip.IsPrivate() || ip.IsLoopback()
 }
 
+// ipMatchIsUnspecified reports whether match is the IPv4 or IPv6 unspecified
+// address (0.0.0.0, ::, ::ffff:0.0.0.0, optional CIDR). These are not identifying
+// endpoints—typically "listen on all interfaces"—so they are left unchanged.
+func ipMatchIsUnspecified(match string) bool {
+	addr := match
+	if i := cidrSuffixIndex(match); i >= 0 {
+		addr = match[:i]
+	}
+	ip := net.ParseIP(addr)
+	if ip == nil {
+		return false
+	}
+	return ip.IsUnspecified()
+}
+
 func (d *IPDetector) Type() string { return "ip" }
 
 // Redact replaces each detected IP with a stable fake IP from the TEST-NET
@@ -203,6 +218,9 @@ func (d *IPDetector) Redact(ctx context.Context, content string, callback Redact
 	content = d.redactIPv6WithBoundaries(content, callback)
 	content = d.ipv4.ReplaceAllStringFunc(content, func(match string) string {
 		if d.excludePrivateLoopback && ipMatchIsPrivateOrLoopback(match) {
+			return match
+		}
+		if ipMatchIsUnspecified(match) {
 			return match
 		}
 		fake := d.pseudonymizer.GetOrCreate(match, false)
@@ -230,6 +248,11 @@ func (d *IPDetector) redactIPv6WithBoundaries(content string, callback Redaction
 			continue
 		}
 		if isRFC3849DocumentationIPv6(match) {
+			b.WriteString(match)
+			last = end
+			continue
+		}
+		if ipMatchIsUnspecified(match) {
 			b.WriteString(match)
 			last = end
 			continue
