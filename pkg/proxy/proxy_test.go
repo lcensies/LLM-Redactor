@@ -27,7 +27,7 @@ func TestContextKeys(t *testing.T) {
 }
 
 func TestNew(t *testing.T) {
-	p, closeRelay := New(nil, zerolog.Nop(), zerolog.Nop(), zerolog.Nop(), "/tmp", false)
+	p, closeRelay := New(nil, zerolog.Nop(), zerolog.Nop(), zerolog.Nop(), "/tmp", false, "")
 	if p == nil {
 		t.Fatal("Expected proxy, got nil")
 	}
@@ -66,10 +66,16 @@ func TestRedactRequestBody_RedactsChunkedBodies(t *testing.T) {
 	req, _ := http.NewRequest(http.MethodPost, "http://example.com", body)
 	req.ContentLength = -1
 
-	_ = redactRequestBody(rdr, "req-1", req)
+	sent, raw := redactRequestBody(rdr, "req-1", req)
 
 	if string(rdr.lastIn) != `{"secret":"123"}` {
 		t.Fatalf("unexpected redactor input: %s", string(rdr.lastIn))
+	}
+	if string(sent) != `{"redacted":true}` {
+		t.Fatalf("unexpected sent body: %s", string(sent))
+	}
+	if string(raw) != `{"secret":"123"}` {
+		t.Fatalf("unexpected raw body: %s", string(raw))
 	}
 	if req.ContentLength != int64(len(`{"redacted":true}`)) {
 		t.Fatalf("expected content length updated, got %d", req.ContentLength)

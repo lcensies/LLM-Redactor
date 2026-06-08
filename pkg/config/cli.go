@@ -10,6 +10,9 @@ type CommonConfig struct {
 	// to stream-debug/<id>.upstream.raw, client bytes after unredact to
 	// stream-debug/<id>.raw, and index lines in stream-debug.jsonl.
 	DebugStream bool   `help:"Log streaming responses under stream-debug/ (origin .upstream.raw + client .raw) (off by default)" env:"LLM_REDACTOR_DEBUG_STREAM" name:"debug-stream"`
+	// Capture, when set, appends one JSON line per outbound (client→upstream)
+	// request to the given file: {ts, method, url, body, body_raw?}. Off by default.
+	Capture string `help:"Append one JSON line per outbound request to this file (full request capture; off by default)" env:"LLM_REDACTOR_CAPTURE" name:"capture" placeholder:"<file.jsonl>"`
 	Version       bool   `help:"Show version information" short:"v"`
 }
 

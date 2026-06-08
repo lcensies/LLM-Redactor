@@ -14,6 +14,7 @@ import (
 	"github.com/wangyihang/llm-redactor/pkg/config"
 	"github.com/wangyihang/llm-redactor/pkg/proxy"
 	"github.com/wangyihang/llm-redactor/pkg/redactor"
+	"github.com/wangyihang/llm-redactor/pkg/utils"
 	"github.com/wangyihang/llm-redactor/pkg/utils/ctxkeys"
 	"github.com/wangyihang/llm-redactor/pkg/utils/logging"
 )
@@ -53,7 +54,11 @@ func StartProxy(cli *config.CommonConfig, logs *logging.Loggers, host string, po
 	if cli.DebugStream {
 		logs.System.Info().Msg("streaming debug: per-request stream-debug/<id>.upstream.raw (from origin) and .raw (after unredact) + stream-debug.jsonl in session dir")
 	}
-	p, closeRelay := proxy.New(contentRedactor, logs.System, logs.SystemFile, logs.Traffic, sessionDir, cli.DebugStream)
+	capturePath := cli.Capture
+	if capturePath != "" {
+		capturePath = utils.ExpandTilde(capturePath)
+	}
+	p, closeRelay := proxy.New(contentRedactor, logs.System, logs.SystemFile, logs.Traffic, sessionDir, cli.DebugStream, capturePath)
 
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Store the ResponseWriter in the context so that it can be hijacked

@@ -27,10 +27,20 @@ func (w *proxyLogWriter) Write(p []byte) (n int, err error) {
 
 // New creates a new goproxy.ProxyHttpServer configured for LLM traffic interception.
 // It returns the proxy and a cleanup function for internal services.
-func New(rdr ContentRedactor, sysLog, sysFileLog, trafficLog zerolog.Logger, sessionDir string, debugStream bool) (*goproxy.ProxyHttpServer, func(context.Context) error) {
+func New(rdr ContentRedactor, sysLog, sysFileLog, trafficLog zerolog.Logger, sessionDir string, debugStream bool, capturePath string) (*goproxy.ProxyHttpServer, func(context.Context) error) {
 	proxy := goproxy.NewProxyHttpServer()
 	proxy.Verbose = true
 	proxy.Logger = log.New(&proxyLogWriter{logger: sysFileLog}, "", 0)
+
+	// Optional full outbound-request capture (opt-in via --capture). One JSON
+	// line per client→upstream request is appended to the given file.
+	capture, err := newCaptureWriter(capturePath)
+	if err != nil {
+		sysLog.Warn().Err(err).Str("path", capturePath).Msg("failed to open capture file; request capture disabled")
+		capture = nil
+	} else if capture != nil {
+		sysLog.Info().Str("path", capturePath).Msg("capturing full outbound requests")
+	}
 
 	caPath, err := GenerateAndSetCA(sessionDir)
 	if err != nil {
@@ -87,6 +97,7 @@ func New(rdr ContentRedactor, sysLog, sysFileLog, trafficLog zerolog.Logger, ses
 	}
 	closeRelay := func(ctx context.Context) error {
 		defer closeWSLog()
+		defer func() { _ = capture.Close() }()
 		if wsRelay == nil {
 			return nil
 		}
@@ -115,7 +126,28 @@ func New(rdr ContentRedactor, sysLog, sysFileLog, trafficLog zerolog.Logger, ses
 		}
 
 		// Handle normal HTTP Request redaction
-		requestBody := redactRequestBody(rdr, requestID, r)
+		requestBody, rawBody := redactRequestBody(rdr, requestID, r)
+
+		// Capture the full outbound request (post-redaction body; raw body too
+		// when redaction changed it) for the external test harness.
+		if capture != nil {
+			url := ""
+			if r.URL != nil {
+				url = r.URL.String()
+			}
+			line := captureLine{
+				TS:     time.Now().Unix(),
+				Method: r.Method,
+				URL:    url,
+				Body:   string(requestBody),
+			}
+			if rawBody != nil && !bytes.Equal(rawBody, requestBody) {
+				line.BodyRaw = string(rawBody)
+			}
+			if werr := capture.Write(line); werr != nil {
+				sysLog.Warn().Err(werr).Msg("capture: failed to write request line")
+			}
+		}
 
 		ctx.UserData.(map[string]interface{})["request_body"] = requestBody
 		return r, nil
@@ -202,13 +234,17 @@ func New(rdr ContentRedactor, sysLog, sysFileLog, trafficLog zerolog.Logger, ses
 	return proxy, closeRelay
 }
 
-func redactRequestBody(rdr ContentRedactor, requestID string, r *http.Request) []byte {
+// redactRequestBody reads, redacts, and rewinds the outbound request body. It
+// returns the body that will actually be sent (post-redaction) and the original
+// pre-redaction body, so callers can capture both. When redaction does not
+// change anything the two are the same slice.
+func redactRequestBody(rdr ContentRedactor, requestID string, r *http.Request) (sent, raw []byte) {
 	if r == nil || r.Body == nil || r.ContentLength >= 10*1024*1024 {
-		return nil
+		return nil, nil
 	}
 	requestBody, err := io.ReadAll(r.Body)
 	if err != nil {
-		return nil
+		return nil, nil
 	}
 
 	reqCtx := context.Background()
@@ -223,10 +259,10 @@ func redactRequestBody(rdr ContentRedactor, requestID string, r *http.Request) [
 		if err == nil && changed {
 			r.Body = io.NopCloser(bytes.NewReader(redacted))
 			r.ContentLength = int64(len(redacted))
-			return redacted
+			return redacted, requestBody
 		}
 	}
 
 	r.Body = io.NopCloser(bytes.NewReader(requestBody))
-	return requestBody
+	return requestBody, requestBody
 }
