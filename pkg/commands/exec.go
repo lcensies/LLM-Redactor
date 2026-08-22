@@ -40,13 +40,18 @@ func Exec(cli *config.ExecCLI, logs *logging.Loggers) {
 		proxyHost = "localhost"
 	}
 	// addr might be [::]:port or 0.0.0.0:port
-	_, port, err := net.SplitHostPort(addr)
+	dialHost, port, err := net.SplitHostPort(addr)
 	if err != nil {
 		port = strings.Split(addr, ":")[len(strings.Split(addr, ":"))-1]
+		dialHost = cli.Host
+	}
+	// Use the actual bound address for readiness check to avoid localhost IPv6 resolution
+	if dialHost == "" || dialHost == "::" || dialHost == "0.0.0.0" {
+		dialHost = "127.0.0.1"
 	}
 	proxyURL := fmt.Sprintf("http://%s:%s", proxyHost, port)
 
-	if err := waitForProxy(proxyHost, port, 3*time.Second); err != nil {
+	if err := waitForProxy(dialHost, port, 3*time.Second); err != nil {
 		logs.System.Fatal().Err(err).Msg("proxy did not become ready")
 	}
 

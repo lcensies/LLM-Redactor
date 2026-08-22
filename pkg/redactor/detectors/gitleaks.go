@@ -2,6 +2,7 @@ package detectors
 
 import (
 	"context"
+	"regexp"
 	"strings"
 
 	gitleaksconfig "github.com/zricethezav/gitleaks/v8/config"
@@ -40,6 +41,20 @@ func NewGitleaksDetector() (*GitleaksDetector, error) {
 		}
 		rules = append(rules, r)
 	}
+
+	// Catch low-entropy passwords that gitleaks skips due to entropy threshold.
+	// Matches KEY_NAME_PASSWORD=value or password: value regardless of entropy.
+	passwordEnvRegex := regexp.MustCompile(
+		`(?i)[A-Za-z0-9_]*password[A-Za-z0-9_]*\s*[=:]\s*['` + "`" + `"]?([^\s'` + "`" + `";,]{4,})['` + "`" + `"]?`,
+	)
+	rules = append(rules, gitleaksconfig.Rule{
+		RuleID:      "password-env-var",
+		Description: "Password value in env-var-like assignment (KEY_PASSWORD=...)",
+		Regex:       passwordEnvRegex,
+		SecretGroup: 1,
+		Keywords:    []string{"password"},
+	})
+
 	return &GitleaksDetector{rules: rules}, nil
 }
 
