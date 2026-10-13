@@ -12,6 +12,9 @@ type Rule struct {
 	RawRegex      string         `toml:"regex" json:"regex"`
 	ReplaceEngine string         `toml:"replace_engine" json:"replace_engine"`
 	Keywords      []string       `toml:"keywords" json:"keywords"`
+	// SecretGroup mirrors gitleaks' secretGroup: replace only that capture
+	// group instead of the whole match. 0 = whole match.
+	SecretGroup int `toml:"secret_group" json:"secret_group"`
 }
 
 type Config struct {

@@ -175,6 +175,7 @@ func New(configPath string, sysLog, detectionLog zerolog.Logger) (*Redactor, err
 			Regex:         rule.Regex,
 			ReplaceEngine: rule.ReplaceEngine,
 			Keywords:      rule.Keywords,
+			SecretGroup:   rule.SecretGroup,
 		})
 	}
 
@@ -188,7 +189,9 @@ func New(configPath string, sysLog, detectionLog zerolog.Logger) (*Redactor, err
 		detectors.NewDeepSeekDetector(),
 		detectors.NewIPDetector(config.ExcludePrivateIPsOrDefault()),
 		detectors.NewEmailDetector(),
+		detectors.NewPhoneDetector(),
 		detectors.NewGitProjectDetector(),
+		detectors.NewVLESSDetector(),
 		// Default threshold 4.3 to skip hex-only strings (max entropy 4.0)
 		// detectors.NewEntropyDetector(4.3, 32),
 	}

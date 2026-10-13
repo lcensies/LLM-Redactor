@@ -2,6 +2,9 @@ package detectors
 
 import (
 	"context"
+	"encoding/base64"
+	"encoding/hex"
+	"fmt"
 	"regexp"
 	"strings"
 	"testing"
@@ -262,5 +265,169 @@ func TestRegexDetectorSharedSessionMapPerReplaceEngine(t *testing.T) {
 	restored := d.Unredact(redacted)
 	if restored != in {
 		t.Fatalf("round-trip: got %q want %q", restored, in)
+	}
+}
+
+// --- SecretGroup (key-anchored rules) ---
+
+func makeGroupRule(id, pattern, engine string, group int) RegexRule {
+	r := makeRule(id, pattern, engine)
+	r.SecretGroup = group
+	return r
+}
+
+func TestRegexDetectorSecretGroupReplacesOnlyTheGroup(t *testing.T) {
+	d := NewRegexDetector([]RegexRule{
+		makeGroupRule("sid", `"short_id"\s*:\s*"([0-9a-f]{2,16})"`, "", 1),
+	})
+	out := d.Redact(context.Background(), `{"short_id": "0123abcd"}`, func(match, _, _ string) string {
+		if match != "0123abcd" {
+			t.Errorf("callback got %q, want the group value only", match)
+		}
+		return "XX"
+	})
+	if out != `{"short_id": "XX"}` {
+		t.Fatalf("got %q, want the key preserved and only the value replaced", out)
+	}
+}
+
+func TestRegexDetectorSecretGroupZeroStillReplacesWholeMatch(t *testing.T) {
+	d := NewRegexDetector([]RegexRule{makeRule("sid", `"short_id"\s*:\s*"([0-9a-f]+)"`, "")})
+	out := d.Redact(context.Background(), `{"short_id": "0123abcd"}`, func(_, _, _ string) string {
+		return "GONE"
+	})
+	if out != `{GONE}` {
+		t.Fatalf("got %q, want whole-match replacement", out)
+	}
+}
+
+func TestRegexDetectorSecretGroupOutOfRangeIsNoOp(t *testing.T) {
+	d := NewRegexDetector([]RegexRule{
+		makeGroupRule("sid", `"short_id"\s*:\s*"([0-9a-f]+)"`, "", 7),
+	})
+	in := `{"short_id": "0123abcd"}`
+	hits := 0
+	out := d.Redact(context.Background(), in, func(_, _, _ string) string {
+		hits++
+		return "GONE"
+	})
+	if out != in {
+		t.Fatalf("got %q, want unchanged input", out)
+	}
+	if hits != 0 {
+		t.Fatalf("expected no detections, got %d", hits)
+	}
+}
+
+func TestRegexDetectorSecretGroupNonParticipatingGroupIsNoOp(t *testing.T) {
+	// The alternation means group 1 is empty when the second branch matches.
+	d := NewRegexDetector([]RegexRule{
+		makeGroupRule("alt", `sid=(?:([0-9a-f]+)|none)`, "", 1),
+	})
+	in := `sid=none`
+	if out := d.Redact(context.Background(), in, nopCallback); out != in {
+		t.Fatalf("got %q, want unchanged input", out)
+	}
+}
+
+func TestRegexDetectorSecretGroupWithReplaceEngineRoundTrips(t *testing.T) {
+	d := NewRegexDetector([]RegexRule{
+		makeGroupRule("co", `"vendor"\s*:\s*"([A-Za-z ]+)"`, "company", 1),
+	})
+	ctx := context.Background()
+	in := `{"vendor": "Acme Corp","ok":true}`
+	redacted := d.Redact(ctx, in, nopCallback)
+	if strings.Contains(redacted, "Acme Corp") {
+		t.Fatalf("original value still present: %q", redacted)
+	}
+	if !strings.Contains(redacted, `"vendor": "`) {
+		t.Fatalf("key destroyed: %q", redacted)
+	}
+	if restored := d.Unredact(redacted); restored != in {
+		t.Fatalf("round-trip: got %q want %q", restored, in)
+	}
+}
+
+func TestRegexDetectorSecretGroupMultipleMatches(t *testing.T) {
+	d := NewRegexDetector([]RegexRule{
+		makeGroupRule("sid", `"sid"\s*:\s*"([0-9a-f]+)"`, "", 1),
+	})
+	out := d.Redact(context.Background(), `{"a":{"sid": "aa"},"b":{"sid": "bb"}}`, func(_, _, _ string) string {
+		return "X"
+	})
+	if out != `{"a":{"sid": "X"},"b":{"sid": "X"}}` {
+		t.Fatalf("got %q", out)
+	}
+}
+
+func TestRegexDetectorTypeDefaultsToRegex(t *testing.T) {
+	if got := NewRegexDetector(nil).Type(); got != "regex" {
+		t.Fatalf("Type() = %q, want %q", got, "regex")
+	}
+}
+
+// --- uuid / base64key / hex / domain engines ---
+
+var uuidShape = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
+
+func TestReplaceEngineShapes(t *testing.T) {
+	cases := []struct {
+		engine string
+		real   string
+		check  func(string) error
+	}{
+		{"uuid", "3f1c9e2a-11b4-4c8d-9f77-0a1b2c3d4e5f", func(f string) error {
+			if !uuidShape.MatchString(f) {
+				return fmt.Errorf("not a hyphenated UUID: %q", f)
+			}
+			return nil
+		}},
+		{"base64key", "xN1Yq8QK0oJ3bV7sT2wA9cLpR4mZ6dH5uE1gF0iK7jY", func(f string) error {
+			if len(f) != 43 {
+				return fmt.Errorf("len = %d, want 43: %q", len(f), f)
+			}
+			if _, err := base64.RawURLEncoding.DecodeString(f); err != nil {
+				return fmt.Errorf("not base64url: %q", f)
+			}
+			return nil
+		}},
+		// Two-character input: the fake must still be 16 chars so Unredact's
+		// substring replace cannot hit unrelated text.
+		{"hex", "ab", func(f string) error {
+			if len(f) != 16 {
+				return fmt.Errorf("len = %d, want 16: %q", len(f), f)
+			}
+			if _, err := hex.DecodeString(f); err != nil {
+				return fmt.Errorf("not hex: %q", f)
+			}
+			return nil
+		}},
+		{"domain", "vpn.example.org", func(f string) error {
+			if !strings.Contains(f, ".") {
+				return fmt.Errorf("not domain-like: %q", f)
+			}
+			return nil
+		}},
+	}
+
+	for _, tc := range cases {
+		p := NewReplaceEnginePseudonymizer(tc.engine)
+		fake := p.GetOrCreate(tc.real)
+		if err := tc.check(fake); err != nil {
+			t.Errorf("engine=%s: %v", tc.engine, err)
+		}
+		if fake == tc.real {
+			t.Errorf("engine=%s: fake equals real value", tc.engine)
+		}
+		if again := p.GetOrCreate(tc.real); again != fake {
+			t.Errorf("engine=%s: unstable mapping %q vs %q", tc.engine, fake, again)
+		}
+		if other := p.GetOrCreate(tc.real + "x"); other == fake {
+			t.Errorf("engine=%s: distinct inputs collided on %q", tc.engine, fake)
+		}
+		real, ok := p.Restore(fake)
+		if !ok || real != tc.real {
+			t.Errorf("engine=%s: Restore(%q) = %q, %v; want %q, true", tc.engine, fake, real, ok, tc.real)
+		}
 	}
 }

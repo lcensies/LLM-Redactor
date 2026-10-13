@@ -13,11 +13,16 @@ type RegexRule struct {
 	Regex         *regexp.Regexp
 	ReplaceEngine string
 	Keywords      []string
+	// SecretGroup mirrors gitleaks' secretGroup: when > 0 only that capture
+	// group is replaced and the rest of the match is preserved. 0 (the
+	// default) replaces the whole match.
+	SecretGroup int
 }
 
 type RegexDetector struct {
 	rules          []RegexRule
 	pseudonymizers map[string]*ReplaceEnginePseudonymizer // keyed by replace_engine (e.g. "company")
+	typeName       string                                 // empty means "regex"
 }
 
 func NewRegexDetector(rules []RegexRule) *RegexDetector {
@@ -37,6 +42,9 @@ func NewRegexDetector(rules []RegexRule) *RegexDetector {
 }
 
 func (d *RegexDetector) Type() string {
+	if d.typeName != "" {
+		return d.typeName
+	}
 	return "regex"
 }
 
@@ -44,6 +52,10 @@ func (d *RegexDetector) Redact(ctx context.Context, content string, callback Red
 	for _, rule := range d.rules {
 		rule := rule // capture for closure
 		if !ContentMatchesRuleKeywords(content, rule.Keywords) {
+			continue
+		}
+		if rule.SecretGroup > 0 {
+			content = d.redactGroup(content, rule, callback)
 			continue
 		}
 		if rule.ReplaceEngine != "" {
@@ -66,6 +78,39 @@ func (d *RegexDetector) Redact(ctx context.Context, content string, callback Red
 		}
 	}
 	return content
+}
+
+// redactGroup replaces only rule.SecretGroup of every match, keeping the rest
+// of the match (typically the anchoring key, e.g. `"short_id": "`) intact.
+// Matches where the group is out of range or did not participate are left
+// untouched and record no detection.
+func (d *RegexDetector) redactGroup(content string, rule RegexRule, callback RedactionCallback) string {
+	matches := rule.Regex.FindAllStringSubmatchIndex(content, -1)
+	if len(matches) == 0 {
+		return content
+	}
+	ps := d.pseudonymizers[rule.ReplaceEngine]
+	var b strings.Builder
+	last := 0
+	for _, m := range matches {
+		lo, hi := 2*rule.SecretGroup, 2*rule.SecretGroup+1
+		if hi >= len(m) || m[lo] < 0 || m[hi] <= m[lo] {
+			continue
+		}
+		match := content[m[lo]:m[hi]]
+		var replacement string
+		if ps != nil {
+			replacement = ps.GetOrCreate(match)
+			callback(match, rule.ID, rule.Description)
+		} else {
+			replacement = callback(match, rule.ID, rule.Description)
+		}
+		b.WriteString(content[last:m[lo]])
+		b.WriteString(replacement)
+		last = m[hi]
+	}
+	b.WriteString(content[last:])
+	return b.String()
 }
 
 // Unredact restores pseudonymized values produced by replace_engine rules.

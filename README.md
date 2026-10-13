@@ -87,6 +87,45 @@ Sent:   "git remote add origin git@randomhost.io:fakeorg/fakeword.git"
 Output: "git remote add origin git@git.acme-internal.com:platform/auth-service.git"  ← restored
 ```
 
+### Phone Numbers
+
+Phone numbers are detected and replaced with stable fake numbers, and restored
+in responses. Covered: international numbers with a `+` country code, the
+Russian trunk form (`8 (999) ...`), and grouped 10-digit numbers.
+
+```
+Input:  "client says call +7 999 123-45-67 or 8 (999) 765-43-21"
+Sent:   "client says call +841017596283 or +812654103879"
+Output: "client says call +7 999 123-45-67 or 8 (999) 765-43-21"  ← restored
+```
+
+Grouping is not preserved in the outbound request (every fake is a single
+`+`-prefixed token), but the original string comes back verbatim. Bare
+unseparated digit runs (`9991234567`), dotted forms (`555.123.4567`) and
+extensions (`ext. 4`) are deliberately left alone: they collide with
+timestamps, order ids, IP literals and version strings.
+
+### VLESS / REALITY Proxy Configs
+
+Pasting a proxy config in to debug it hands the model the credentials to your
+server. The client `uuid`, the REALITY `public_key` and `short_id`, and the
+SNI/host are pseudonymized in both JSON configs (Xray and sing-box key names)
+and `vless://` share links. Responses are restored before you see them.
+
+```
+Input:  {"uuid":"3f1c9e2a-11b4-4c8d-9f77-0a1b2c3d4e5f","server_name":"www.microsoft.com","short_id":"0123abcd"}
+Sent:   {"uuid":"1ef01f99-9c31-47e9-b6be-3762e6b83b53","server_name":"lhepxif.org","short_id":"a010ece7bf8d369a"}
+Output: {"uuid":"3f1c9e2a-11b4-4c8d-9f77-0a1b2c3d4e5f","server_name":"www.microsoft.com","short_id":"0123abcd"}  ← restored
+
+Input:  vless://3f1c9e2a-...-0a1b2c3d4e5f@vpn.example.org:443?pbk=AAECAwQF...&sid=0123abcd&sni=www.microsoft.com#MyNode
+Sent:   vless://1ef01f99-...-3762e6b83b53@qmulxeb.net:443?pbk=MzSodfvk...&sid=a010ece7bf8d369a&sni=lhepxif.org#MyNode
+```
+
+The port, transport parameters and the `#label` fragment are left alone. IP
+literals are handled by the IP pseudonymizer instead. A JSON `public_key` is
+additionally matched by the Gitleaks `generic-api-key` rule, so it is masked
+rather than restored — the real key still never leaves the machine.
+
 ### Company Names and Employee Names
 
 These are not detected automatically. Add them to a custom rules file passed via `--redactor-rules` (TOML, Gitleaks-compatible format):
@@ -129,8 +168,24 @@ The `replace_engine` field controls how matches are replaced:
 | `company` | Realistic fake company name (stable per session) | `"Acme Corp"` → `"Harrison Ltd"` |
 | `name` | Realistic fake person name (stable per session) | `"John Doe"` → `"Emily Carter"` |
 | `email` | Realistic fake email address (stable per session) | `"j@acme.com"` → `"x@example.net"` |
+| `domain` | Fake domain name (stable per session) | `"vpn.acme.com"` → `"lhepxif.org"` |
+| `uuid` | Fake UUID (stable per session) | `"3f1c9e2a-…"` → `"1ef01f99-…"` |
+| `base64key` | Fake 43-char base64url key (stable per session) | `"AAECAwQF…"` → `"MzSodfvk…"` |
+| `hex` | Fake 16-char hex string (stable per session) | `"0123abcd"` → `"a010ece7bf8d369a"` |
+| `phone` | Fake E.164 phone number (stable per session) | `"+7 999 123-45-67"` → `"+841017596283"` |
 
 When a `replace_engine` is set, the same real value always maps to the same fake value within a session, and the LLM's response is automatically unredacted before it reaches you.
+
+A rule may also set `secret_group = N` to replace only capture group N instead of
+the whole match — needed when the regex has to anchor on surrounding text:
+
+```toml
+[[rules]]
+id = "internal-tenant-id"
+regex = '"tenant_id"\s*:\s*"([0-9a-f]{16})"'
+secret_group = 1             # rewrite the value, keep the JSON key intact
+replace_engine = "hex"
+```
 
 ## Audit & Logs
 

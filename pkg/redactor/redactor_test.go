@@ -552,3 +552,131 @@ func TestDroppedEventsOnFullChannel(t *testing.T) {
 		t.Fatalf("expected 1 dropped event, got %d", r.DroppedEvents())
 	}
 }
+
+// --- VLESS config redaction, end to end through the JSON request/response path ---
+
+const vlessTestUUID = "3f1c9e2a-11b4-4c8d-9f77-0a1b2c3d4e5f"
+const vlessTestKey = "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8"
+
+func TestVLESSConfigRedactRequestRoundTrip(t *testing.T) {
+	r, err := New("", zerolog.Nop(), zerolog.Nop())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+
+	// public_key is deliberately absent: gitleaks' generic-api-key rule claims
+	// any value under a *_key JSON key and masks it irreversibly, which wins
+	// over pseudonymization (see TestVLESSPublicKeyIsMaskedByGitleaksNotLeaked).
+	content := `why does this fail? {"type":"vless","uuid":"` + vlessTestUUID +
+		`","tls":{"server_name":"www.microsoft.com","reality":{"short_id":"0123abcd"}}}`
+	body, err := json.Marshal(map[string]interface{}{
+		"messages": []interface{}{map[string]interface{}{"role": "user", "content": content}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	redacted, changed, err := r.RedactRequest(context.Background(), body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !changed {
+		t.Fatal("expected the VLESS config to be redacted")
+	}
+	for _, secret := range []string{vlessTestUUID, "0123abcd", "www.microsoft.com"} {
+		if bytes.Contains(redacted, []byte(secret)) {
+			t.Errorf("%q leaked in outbound body: %s", secret, redacted)
+		}
+	}
+
+	// The model echoes the (redacted) config back; the user must see the real one.
+	restored, changed, err := r.UnredactResponse(redacted)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !changed {
+		t.Fatal("expected the response to be unredacted")
+	}
+	if !bytes.Equal(restored, body) {
+		t.Fatalf("round-trip mismatch\n got: %s\nwant: %s", restored, body)
+	}
+}
+
+// A JSON public_key is also matched by gitleaks' generic-api-key rule, which
+// runs after the VLESS detector and masks the pseudonym. The real key must
+// still never leave, but the value is not restorable.
+func TestVLESSPublicKeyIsMaskedByGitleaksNotLeaked(t *testing.T) {
+	r, err := New("", zerolog.Nop(), zerolog.Nop())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+
+	out, changed := r.RedactContent(context.Background(), `{"public_key":"`+vlessTestKey+`"}`)
+	if !changed || strings.Contains(out, vlessTestKey) {
+		t.Fatalf("public key leaked: %s", out)
+	}
+
+	// The URI form is not claimed by gitleaks ("pbk" is not a secret keyword),
+	// so it round-trips.
+	uri := "vless://" + vlessTestUUID + "@vpn.example.org:443?pbk=" + vlessTestKey + "#Node"
+	red, changed := r.RedactContent(context.Background(), uri)
+	if !changed || strings.Contains(red, vlessTestKey) {
+		t.Fatalf("URI public key leaked: %s", red)
+	}
+	if got := r.UnredactContent(red); got != uri {
+		t.Fatalf("URI round-trip\n got: %s\nwant: %s", got, uri)
+	}
+}
+
+func TestVLESSStreamUnredactAcrossChunks(t *testing.T) {
+	r, err := New("", zerolog.Nop(), zerolog.Nop())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	streamSplitRoundTrip(t, r, `"uuid":"`+vlessTestUUID+`"`)
+}
+
+// --- Phone number redaction, end to end through the JSON request/response path ---
+
+func TestPhoneRedactRequestRoundTrip(t *testing.T) {
+	r, err := New("", zerolog.Nop(), zerolog.Nop())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+
+	content := "client says call +7 999 123-45-67 or 8 (999) 765-43-21"
+	body, err := json.Marshal(map[string]interface{}{
+		"messages": []interface{}{map[string]interface{}{"role": "user", "content": content}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	redacted, changed, err := r.RedactRequest(context.Background(), body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !changed {
+		t.Fatal("expected the phone numbers to be redacted")
+	}
+	for _, number := range []string{"+7 999 123-45-67", "8 (999) 765-43-21"} {
+		if bytes.Contains(redacted, []byte(number)) {
+			t.Errorf("%q leaked in outbound body: %s", number, redacted)
+		}
+	}
+
+	restored, changed, err := r.UnredactResponse(redacted)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !changed {
+		t.Fatal("expected the response to be unredacted")
+	}
+	if !bytes.Equal(restored, body) {
+		t.Fatalf("round-trip mismatch\n got: %s\nwant: %s", restored, body)
+	}
+}
